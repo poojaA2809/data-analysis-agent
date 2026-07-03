@@ -8,50 +8,9 @@
 
 import { ComingSoonBadge } from './ComingSoon'
 
-/** Left sidebar: past sessions. Real in Phase 2. */
-export function HistorySidebar() {
-  return (
-    <aside
-      aria-hidden="true"
-      className="hidden w-60 shrink-0 select-none flex-col border-r border-gray-200 bg-gray-50/60 p-4 lg:flex"
-    >
-      <div className="mb-3 flex items-center justify-between">
-        <h2 className="text-sm font-semibold text-gray-400">History</h2>
-        <ComingSoonBadge phase="Phase 2" />
-      </div>
-      <p className="mb-4 text-xs leading-relaxed text-gray-400">
-        Your past sessions will appear here. Click one to reload its datasets and
-        conversation.
-      </p>
-      <div className="space-y-2 opacity-50">
-        {['Sales analysis', 'Q3 cohort review', 'Churn deep-dive'].map((t) => (
-          <div
-            key={t}
-            className="rounded-md border border-gray-200 bg-white px-3 py-2 text-xs text-gray-400"
-          >
-            {t}
-          </div>
-        ))}
-      </div>
-    </aside>
-  )
-}
-
-/** Per-dataset profile card. Real in Phase 2. */
-export function ProfileCardStub() {
-  return (
-    <div className="rounded-lg border border-dashed border-gray-300 bg-gray-50/60 p-4 opacity-70">
-      <div className="mb-2 flex items-center justify-between">
-        <h3 className="text-sm font-semibold text-gray-500">Dataset profile</h3>
-        <ComingSoonBadge phase="Phase 2" />
-      </div>
-      <p className="text-xs leading-relaxed text-gray-400">
-        Columns, types, ranges, and data-quality flags for each upload will be
-        summarised here.
-      </p>
-    </div>
-  )
-}
+// NOTE: The Phase-1 HistorySidebar and ProfileCardStub have been promoted to
+// real Phase-2 components (`HistorySidebar.tsx`, `ProfileCard.tsx`). The stubs
+// below remain clearly-labelled Phase-3 placeholders.
 
 /** Charts + summary tables + key stats under the answer. Real in Phase 3. */
 export function ChartsPlaceholder() {

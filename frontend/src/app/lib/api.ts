@@ -6,18 +6,101 @@
 // On an HTTP error the body is `{ detail: { code, message } }`. Both shapes
 // are handled by `unwrap` below.
 
+// A dataset profile is computed server-side (Phase 2) by `analysis/profiler.py`.
+// These types mirror that REAL shape exactly; consumers still render
+// defensively (any absent field is simply skipped) but target this shape.
+export type NumericSummary = {
+  mean?: number | null
+  std?: number | null
+  min?: number | null
+  max?: number | null
+}
+
+export type ProfileColumn = {
+  name?: string
+  dtype?: string
+  non_null_count?: number | null
+  null_count?: number | null
+  null_pct?: number | null
+  unique_count?: number | null
+  is_numeric?: boolean
+  summary?: NumericSummary | null
+  outlier_count?: number | null
+  top_values?: { value: unknown; count: number }[] | null
+  [key: string]: unknown
+}
+
+export type ProfileQuality = {
+  missing_value_columns?: { name?: string; null_count?: number; null_pct?: number }[] | null
+  duplicate_row_count?: number | null
+  outlier_columns?: { name?: string; outlier_count?: number }[] | null
+}
+
+export type Profile = {
+  filename?: string | null
+  summary?: string | null
+  row_count?: number | null
+  column_count?: number | null
+  columns?: ProfileColumn[] | null
+  quality?: ProfileQuality | null
+  [key: string]: unknown
+}
+
 export type DatasetData = {
   dataset_id: string
   session_id: string
   filename: string
   file_type: string
   size_bytes: number
-  profile: unknown | null
+  profile: Profile | null
 }
 
 export type SessionData = {
   session_id: string
   title: string | null
+}
+
+export type SessionSummary = {
+  id: string
+  title: string | null
+  updated_at?: string | null
+  created_at?: string | null
+  dataset_count?: number | null
+  message_count?: number | null
+}
+
+export type SessionDataset = {
+  id: string
+  filename: string
+  file_type: string
+  size_bytes: number
+  profile: Profile | null
+  created_at?: string | null
+}
+
+export type SessionMessage = {
+  id?: string
+  role: string
+  content: string
+  created_at?: string | null
+}
+
+export type SessionRun = {
+  id: string
+  question: string
+  status?: string
+  answer_text: string | null
+  generated_code: string | null
+  step_count: number | null
+  created_at?: string | null
+  completed_at?: string | null
+}
+
+export type SessionDetail = {
+  session: SessionSummary
+  datasets: SessionDataset[]
+  messages: SessionMessage[]
+  runs: SessionRun[]
 }
 
 export type MessageData = {
@@ -104,6 +187,19 @@ export async function createSession(title?: string): Promise<SessionData> {
     body: JSON.stringify(title ? { title } : {}),
   })
   return unwrap<SessionData>(res)
+}
+
+/** List past sessions for the history sidebar (Phase 2). */
+export async function listSessions(): Promise<SessionSummary[]> {
+  const res = await fetch('/sessions', { method: 'GET' })
+  const data = await unwrap<{ sessions: SessionSummary[] }>(res)
+  return data.sessions ?? []
+}
+
+/** Load a full session (datasets, messages, run history) to reopen it. */
+export async function getSession(sessionId: string): Promise<SessionDetail> {
+  const res = await fetch(`/sessions/${sessionId}`, { method: 'GET' })
+  return unwrap<SessionDetail>(res)
 }
 
 /** Ask a question against the given datasets in a session. */

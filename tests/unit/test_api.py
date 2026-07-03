@@ -25,7 +25,12 @@ def test_upload_csv_creates_session_and_dataset(api_client):
     data = r.json()["data"]
     assert data["file_type"] == "csv"
     assert data["size_bytes"] > 0
-    assert data["profile"] is None
+    # Phase 2: uploads are auto-profiled (deterministic stats always present).
+    assert isinstance(data["profile"], dict)
+    assert data["profile"]["row_count"] == 6
+    assert {c["name"] for c in data["profile"]["columns"]} == {
+        "region", "order_value", "units"
+    }
     assert data["session_id"] and data["dataset_id"]
 
 

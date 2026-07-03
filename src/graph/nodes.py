@@ -8,6 +8,7 @@ import re
 from pathlib import Path
 
 from analysis.executor import execute_python
+from analysis.profiler import profile_dataframe
 from config.settings import get_settings
 from graph.state import AgentState
 from llm.client import LLMClient
@@ -30,7 +31,32 @@ def _schema_block(schemas: list[dict]) -> str:
             f"Columns (name: dtype): {json.dumps(s.get('columns', {}))}\n"
             f"Sample rows: {json.dumps(s.get('sample_rows', []))}"
         )
+    if parts and len(schemas or []) > 1:
+        handles = ", ".join(
+            f'dfs["{s.get("name")}"]' for s in schemas
+        )
+        header = (
+            f"You have {len(schemas)} datasets loaded. Access each via its handle: "
+            f"{handles}. `df` is the first dataset. Join/compare across `dfs[...]`.\n\n"
+        )
+        return header + "\n\n".join(parts)
     return "\n\n".join(parts) if parts else "(no schema available)"
+
+
+def _history_block(messages: list | None, max_turns: int = 6) -> str:
+    """Render the last N prior conversation turns for context (never full history)."""
+    if not messages:
+        return ""
+    recent = messages[-max_turns:]
+    lines = []
+    for m in recent:
+        role = m.get("role", "user") if isinstance(m, dict) else "user"
+        content = m.get("content", "") if isinstance(m, dict) else str(m)
+        if content:
+            lines.append(f"{role}: {content}")
+    if not lines:
+        return ""
+    return "Prior conversation (most recent turns):\n" + "\n".join(lines) + "\n\n"
 
 
 def _strip_code_fences(text: str) -> str:
@@ -43,6 +69,7 @@ def _strip_code_fences(text: str) -> str:
 def plan(state: AgentState) -> AgentState:
     try:
         prompt = (
+            f"{_history_block(state.get('messages'))}"
             f"Question: {state['question']}\n\n"
             f"{_schema_block(state.get('dataset_schemas', []))}"
         )
@@ -56,6 +83,7 @@ def plan(state: AgentState) -> AgentState:
 def generate_code(state: AgentState) -> AgentState:
     try:
         prompt = (
+            f"{_history_block(state.get('messages'))}"
             f"Question: {state['question']}\n\n"
             f"Plan:\n{state.get('plan', '')}\n\n"
             f"{_schema_block(state.get('dataset_schemas', []))}"
@@ -162,3 +190,43 @@ def finalize(state: AgentState) -> AgentState:
 def handle_error(state: AgentState) -> AgentState:
     _log.error("node.handle_error", run_id=state.get("run_id"), error=state.get("error"))
     return {**state, "status": "failed"}
+
+
+def _narrate_profile(profile: dict) -> str | None:
+    """Ask Gemini to narrate the deterministic profile. Never raises — returns
+    None on any LLM failure so the upload path degrades to deterministic-only."""
+    try:
+        cols = ", ".join(
+            f"{c['name']} ({c['dtype']})" for c in profile.get("columns", [])
+        )
+        quality = profile.get("quality", {})
+        stats = (
+            f"Filename: {profile.get('filename')}\n"
+            f"Rows: {profile.get('row_count')}, Columns: {profile.get('column_count')}\n"
+            f"Columns: {cols}\n"
+            f"Missing-value columns: {json.dumps(quality.get('missing_value_columns', []))}\n"
+            f"Duplicate rows: {quality.get('duplicate_row_count', 0)}\n"
+            f"Outlier columns: {json.dumps(quality.get('outlier_columns', []))}"
+        )
+        return LLMClient().call_model(stats, system=_prompt("profile"))
+    except Exception as exc:  # noqa: BLE001 — narration is best-effort only
+        _log.info("profile.narration_skipped", error=str(exc))
+        return None
+
+
+def profile(path: str, filename: str | None = None) -> dict:
+    """Upload-path profiler: deterministic stats (source of truth) + optional
+    LLM narration. Runs on upload, not on the ask path. Never raises on LLM error.
+    """
+    prof = profile_dataframe(path, filename)
+    narration = _narrate_profile(prof)
+    if narration:
+        prof["summary"] = narration
+    _log.info(
+        "node.profile",
+        filename=prof.get("filename"),
+        row_count=prof.get("row_count"),
+        column_count=prof.get("column_count"),
+        narrated=bool(narration),
+    )
+    return prof

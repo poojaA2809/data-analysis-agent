@@ -4,15 +4,24 @@ import { useRef, useState } from 'react'
 
 const MAX_BYTES = 100 * 1024 * 1024 // 100MB, per spec/roadmap.md
 
+import type { Profile } from '../lib/api'
+
 export type UploadedFile = {
   datasetId: string
   filename: string
   sizeBytes: number
+  fileType?: string
+  profile?: Profile | null
 }
 
-function isCsv(file: File): boolean {
+function isSupported(file: File): boolean {
   const name = file.name.toLowerCase()
-  return name.endsWith('.csv') || file.type === 'text/csv'
+  return (
+    name.endsWith('.csv') ||
+    name.endsWith('.xlsx') ||
+    name.endsWith('.xls') ||
+    file.type === 'text/csv'
+  )
 }
 
 function formatSize(bytes: number): string {
@@ -35,24 +44,27 @@ export function Dropzone({
   const [error, setError] = useState<string | null>(null)
   const [uploading, setUploading] = useState(false)
 
-  async function accept(file: File | undefined | null) {
-    if (!file) return
+  async function acceptMany(list: FileList | File[] | null | undefined) {
+    const arr = list ? Array.from(list) : []
+    if (arr.length === 0) return
     setError(null)
-    if (!isCsv(file)) {
-      setError('Only CSV files are supported in Phase 1. Excel arrives in Phase 2.')
-      return
-    }
-    if (file.size > MAX_BYTES) {
-      setError('That file is larger than 100MB. Please upload a smaller CSV.')
-      return
-    }
-    setUploading(true)
-    try {
-      await onFile(file)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Upload failed. Please try again.')
-    } finally {
-      setUploading(false)
+    for (const file of arr) {
+      if (!isSupported(file)) {
+        setError(`${file.name}: only CSV and Excel (.xlsx/.xls) files are supported.`)
+        continue
+      }
+      if (file.size > MAX_BYTES) {
+        setError(`${file.name} is larger than 100MB. Please upload a smaller file.`)
+        continue
+      }
+      setUploading(true)
+      try {
+        await onFile(file)
+      } catch (e) {
+        setError(e instanceof Error ? e.message : `Upload of ${file.name} failed. Please try again.`)
+      } finally {
+        setUploading(false)
+      }
     }
   }
 
@@ -63,7 +75,7 @@ export function Dropzone({
       <div
         role="button"
         tabIndex={0}
-        aria-label="Upload a CSV file — drag and drop or press Enter to browse"
+        aria-label="Upload a CSV or Excel file — drag and drop or press Enter to browse"
         aria-disabled={busy}
         onClick={() => !busy && inputRef.current?.click()}
         onKeyDown={(e) => {
@@ -80,7 +92,7 @@ export function Dropzone({
         onDrop={(e) => {
           e.preventDefault()
           setDragging(false)
-          if (!busy) void accept(e.dataTransfer.files?.[0])
+          if (!busy) void acceptMany(e.dataTransfer.files)
         }}
         className={[
           'flex cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed px-6 py-8 text-center transition',
@@ -93,12 +105,13 @@ export function Dropzone({
         <input
           ref={inputRef}
           type="file"
-          accept=".csv,text/csv"
+          accept=".csv,text/csv,.xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
+          multiple
           className="hidden"
           data-testid="file-input"
           disabled={busy}
           onChange={(e) => {
-            void accept(e.target.files?.[0])
+            void acceptMany(e.target.files)
             e.target.value = ''
           }}
         />
@@ -117,9 +130,11 @@ export function Dropzone({
           />
         </svg>
         <p className="text-sm font-medium text-gray-700">
-          {uploading ? 'Uploading…' : 'Drop a CSV here, or click to browse'}
+          {uploading ? 'Uploading…' : 'Drop CSV or Excel files here, or click to browse'}
         </p>
-        <p className="mt-1 text-xs text-gray-400">CSV only · up to 100MB</p>
+        <p className="mt-1 text-xs text-gray-400">
+          CSV, XLSX, XLS · multiple files · up to 100MB each
+        </p>
       </div>
 
       {error && (
@@ -129,7 +144,11 @@ export function Dropzone({
       )}
 
       {files.length > 0 && (
-        <ul className="mt-3 flex flex-wrap gap-2" aria-label="Uploaded files">
+        <ul
+          className="mt-3 flex flex-wrap gap-2"
+          aria-label="Uploaded files"
+          data-testid="uploaded-files"
+        >
           {files.map((f) => (
             <li
               key={f.datasetId}

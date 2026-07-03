@@ -19,6 +19,7 @@ def run_agent(
     dataset_schemas: list[dict],
     *,
     dataset_ids: list[str] | None = None,
+    messages: list[dict] | None = None,
 ) -> str:
     """Run the analyze_dataset agent for one question. Returns the run id."""
     started = time.monotonic()
@@ -43,6 +44,7 @@ def run_agent(
         "question": question,
         "dataset_paths": dataset_paths,
         "dataset_schemas": dataset_schemas,
+        "messages": messages or [],
         "step_count": 0,
         "error": None,
     }

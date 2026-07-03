@@ -1,0 +1,6 @@
+region,order_value,units
+West,100.0,2
+East,200.0,1
+West,300.0,4
+East,200.0,1
+West,,3

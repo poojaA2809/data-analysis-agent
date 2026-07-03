@@ -1,5 +1,7 @@
+import json
+
 from fastapi import APIRouter, Depends
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from analysis.schema import derive_schema
@@ -26,6 +28,35 @@ def create_session(
     session.flush()
     return ok(
         CreateSessionResponse(session_id=row.id, title=row.title).model_dump()
+    )
+
+
+@router.get("/sessions")
+def list_sessions(session: Session = Depends(get_session)) -> dict:
+    """List sessions for the history sidebar, newest activity first."""
+    sessions = session.scalars(
+        select(SessionRow).order_by(SessionRow.updated_at.desc())
+    ).all()
+
+    def _count(model, sid) -> int:
+        return session.scalar(
+            select(func.count()).select_from(model).where(model.session_id == sid)
+        ) or 0
+
+    return ok(
+        {
+            "sessions": [
+                {
+                    "id": s.id,
+                    "title": s.title,
+                    "created_at": s.created_at.isoformat(),
+                    "updated_at": s.updated_at.isoformat(),
+                    "dataset_count": _count(DatasetRow, s.id),
+                    "message_count": _count(MessageRow, s.id),
+                }
+                for s in sessions
+            ]
+        }
     )
 
 
@@ -60,6 +91,15 @@ def ask_question(
     dataset_paths = [d.file_path for d in datasets]
     dataset_schemas = [derive_schema(d.file_path, d.filename) for d in datasets]
 
+    # Load prior conversation turns for context. autoflush is off, so the
+    # just-added (unflushed) user message is not returned here.
+    prior = session.scalars(
+        select(MessageRow)
+        .where(MessageRow.session_id == session_id)
+        .order_by(MessageRow.created_at)
+    ).all()
+    history = [{"role": m.role, "content": m.content} for m in prior]
+
     # Commit the user message + session before running the agent (separate txn).
     session.commit()
 
@@ -69,6 +109,7 @@ def ask_question(
         dataset_paths=dataset_paths,
         dataset_schemas=dataset_schemas,
         dataset_ids=req.dataset_ids,
+        messages=history,
     )
 
     run = session.get(RunRow, run_id)
@@ -122,7 +163,7 @@ def get_session_detail(
                     "filename": d.filename,
                     "file_type": d.file_type,
                     "size_bytes": d.size_bytes,
-                    "profile": None,
+                    "profile": json.loads(d.profile_json) if d.profile_json else None,
                     "created_at": d.created_at.isoformat(),
                 }
                 for d in datasets

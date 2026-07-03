@@ -1,16 +1,22 @@
-# Data-Analysis Agent — Phase 1 (Ask-one-CSV)
+# Data-Analysis Agent — Phase 2 (Persist, profile, and combine)
 
 > **Run every command from the repo root.** All Python commands are prefixed with `uv run`.
 
-Upload one CSV, ask a plain-language question, and a LangGraph agent plans, writes pandas,
-runs it locally in a bounded subprocess against your real data, self-corrects on error up to
-a step limit, and returns a plain-language answer plus the exact executed Python. Raw data
-never leaves the machine — only a few sample rows are sent to the LLM.
+Upload CSV **and Excel** files, ask plain-language questions, and a LangGraph agent plans,
+writes pandas, runs it locally in a bounded subprocess against your real data, self-corrects
+on error up to a step limit, and returns a plain-language answer plus the exact executed
+Python. Raw data never leaves the machine — only a few sample rows are sent to the LLM.
 
-## Setup & run (Phase 1 backend)
+**Phase 2 adds:** every upload is **auto-profiled** (columns, types, ranges, data-quality
+flags) on the upload path; sessions, datasets, messages, and full run history **persist**
+across server restarts and are listable for a history sidebar; **conversation memory** injects
+prior turns so follow-up questions are understood; and you can load **multiple files (incl.
+Excel)** into one session and ask a single question that joins/compares them.
+
+## Setup & run
 
 ```bash
-cp .env.example .env          # set AGENT_ANTHROPIC_API_KEY=<your real sk-ant-... key>
+cp .env.example .env          # set AGENT_GEMINI_API_KEY=<your real Gemini key>
 uv sync --extra dev
 
 # Build the SQLite schema (sessions, datasets, messages, runs) from scratch:
@@ -21,7 +27,7 @@ uv run alembic current        # -> 0001 (head)
 uv run python -m src
 ```
 
-Config (env, prefix `AGENT_`): `AGENT_ANTHROPIC_API_KEY`, `AGENT_DATABASE_URL`
+Config (env, prefix `AGENT_`): `AGENT_GEMINI_API_KEY`, `AGENT_DATABASE_URL`
 (default `sqlite:///./data/agent.db`), `AGENT_MAX_STEPS` (default 4),
 `AGENT_EXEC_TIMEOUT` (default 25), `AGENT_LOG_LEVEL`.
 
@@ -29,16 +35,48 @@ Config (env, prefix `AGENT_`): `AGENT_ANTHROPIC_API_KEY`, `AGENT_DATABASE_URL`
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| POST | `/datasets` | Multipart CSV upload (`file`, optional `session_id`) → stores under `data/uploads/`, returns `{dataset_id, session_id, filename, file_type, size_bytes, profile}` |
+| POST | `/datasets` | Multipart CSV/Excel upload (`file`, optional `session_id`) → stores under `data/uploads/`, **auto-profiles**, returns `{dataset_id, session_id, filename, file_type, size_bytes, profile}` where `profile` is the deterministic profile dict (see below) |
 | POST | `/sessions` | Create a session → `{session_id, title}` |
-| POST | `/sessions/{id}/messages` | Ask `{question, dataset_ids}` → runs the agent, returns `{run_id, status, answer_text, generated_code, step_count, ...}` |
-| GET | `/sessions/{id}` | Session detail → `{session, datasets, messages, runs}` |
+| POST | `/sessions/{id}/messages` | Ask `{question, dataset_ids}` (N datasets → multi-file join) → runs the agent with conversation memory, returns `{run_id, status, answer_text, generated_code, step_count, ...}` |
+| GET | `/sessions/{id}` | Session detail → `{session, datasets, messages, runs}`; each dataset carries its real parsed `profile` |
+| GET | `/sessions` | List sessions for the history sidebar → `{sessions:[{id, title, created_at, updated_at, dataset_count, message_count}]}` ordered by `updated_at` desc |
 | GET | `/health` | Health check |
+
+**Profile shape** (`profile` field on `POST /datasets` and each `datasets[]` in `GET /sessions/{id}`):
+
+```json
+{
+  "filename": "sales.csv",
+  "row_count": 6,
+  "column_count": 3,
+  "summary": "Optional one-paragraph LLM narration (omitted if the LLM errors).",
+  "columns": [
+    {"name": "order_value", "dtype": "int64", "non_null_count": 6, "null_count": 0,
+     "null_pct": 0.0, "unique_count": 6, "is_numeric": true,
+     "summary": {"mean": 175.0, "std": 93.5, "min": 50.0, "max": 300.0},
+     "outlier_count": 0},
+    {"name": "region", "dtype": "object", "non_null_count": 6, "null_count": 0,
+     "null_pct": 0.0, "unique_count": 3, "is_numeric": false,
+     "top_values": [{"value": "West", "count": 3}]}
+  ],
+  "quality": {
+    "missing_value_columns": [{"name": "order_value", "null_count": 1, "null_pct": 20.0}],
+    "duplicate_row_count": 1,
+    "outlier_columns": [{"name": "amount", "outlier_count": 2}]
+  }
+}
+```
+
+Multi-file: generated code accesses each dataset via `dfs["<filename-stem>"]` (and `df` = the
+first dataset). Excel is loaded via `openpyxl`. Profiling is deterministic (pandas) — the
+deterministic dict is the source of truth; the optional `summary` narration is best-effort and
+the upload never fails if the LLM errors.
 
 ### Tests
 
 ```bash
 uv run pytest tests/unit/ -q         # no key needed (contract, DB, executor, settings)
+uv run pytest tests/phase2/ -q       # Phase 2: profiler (no key) + integration (needs key)
 uv run pytest -q                     # full suite — integration needs a real AGENT_GEMINI_API_KEY
 ```
 

@@ -22,7 +22,11 @@ test('upload a CSV, ask a question, and see a real answer + the exact code', asy
   await page.getByTestId('file-input').setInputFiles(CSV_FIXTURE)
 
   // The uploaded file chip confirms the dataset was accepted by /datasets.
-  await expect(page.getByText('sales.csv')).toBeVisible({ timeout: 30_000 })
+  // Scope to the uploaded-files list — 'sales.csv' also appears in the dataset
+  // picker and the profile card, so an unscoped locator is strict-mode ambiguous.
+  await expect(
+    page.getByTestId('uploaded-files').getByText('sales.csv'),
+  ).toBeVisible({ timeout: 30_000 })
 
   // 2. Ask a question and submit.
   await page
