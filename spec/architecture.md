@@ -10,7 +10,7 @@ A single-origin local web app. A FastAPI process serves both the REST API and th
 
 ```
 Browser (static Next.js export @ /app/)
-    ↓  REST + (Phase 3) SSE
+    ↓  REST + (Phase 3) single-request SSE (POST .../messages/stream)
 FastAPI (:8001)  ──►  Google Gemini API (planning / codegen / critique — sample rows only)
     ↓
 LangGraph agent (plan → generate_code → execute_code → observe → [retry] → finalize)
@@ -38,8 +38,8 @@ Local file storage (data/uploads/<dataset_id>.<ext>)
 2. User asks a question in a session → `POST /sessions/{id}/messages` persists the user message and starts a run.
 3. Agent **plans** an approach (sample rows + schema in prompt), **generates Python**, **executes it locally** in a bounded subprocess capturing stdout + a `result` value.
 4. Agent **observes**: on error or an implausible result it revises the code and retries, up to `AGENT_MAX_STEPS`.
-5. **finalize:** compose a plain-language answer (P3: + charts/tables/keystats/follow-ups); persist the `runs` row (question, plan, code, stdout, result, answer, tokens, cost, timestamps) and the assistant message.
-6. **Output:** answer + collapsible executed code returned to the browser (P3: streamed live via SSE).
+5. **finalize:** compose a plain-language answer and, in Phase 3 (now REAL), a render step derives `charts`/`tables`/`key_stats` from the local execution result and `suggest_followups` proposes 2–3 next questions; token usage from every Gemini call in the run is summed into `prompt_tokens`/`completion_tokens`/`cost_usd`. Persist the `runs` row (question, plan, code, stdout, result, answer, tokens, cost, timestamps) and the assistant message. (Phase 3 also adds a `clarify` entry-gate that can END early with a clarifying question before any code runs.)
+6. **Output:** answer + collapsible executed code returned to the browser; Phase 3 (now REAL) streams steps + answer tokens live via the single-request SSE POST and renders interactive charts/tables/key-stats plus per-run + daily cost.
 
 ## Local Python Execution (sandbox model)
 
@@ -59,7 +59,7 @@ See `spec/data.md` for full fields. Tables: `sessions`, `datasets` (FK session, 
 
 ## Streaming (Phase 3)
 
-`GET /sessions/{id}/stream/{run_id}` is a **Server-Sent Events** endpoint. The agent emits typed events through `src/observability/events.py` — `step` (`{label: "Planning…"|"Running code…"|"Charting…"}`), `token` (streamed answer chunks), and `done` (final payload). Phase 1/2 return the full answer synchronously from the POST; Phase 3 wires the SSE stream and the frontend consumes it.
+`POST /sessions/{id}/messages/stream` is a **single-request Server-Sent Events** endpoint (sse-starlette): the ask and the live stream are the same request. The agent emits typed events through `src/observability/events.py` — `step` (`{label: "Planning…"|"Generating code…"|"Running code…"|"Checking result…"|"Charting…"|"Writing answer…"}`), `token` (streamed answer chunks from `finalize`), `clarify` (`{question}`, emitted when the clarify gate triggers, then the stream ends), and `done` (the full enriched `AskResponse`). The synchronous `POST /sessions/{id}/messages` returns the same enriched payload and is used by tests and as a fallback. This POST-stream mechanism is the **chosen design** over a background-run + `GET`-stream (single request, simpler, works with `fetch` + `ReadableStream`). The frontend consumes the stream via `fetch` + `ReadableStream`.
 
 ## Single-origin Frontend
 
@@ -77,7 +77,7 @@ The Next.js frontend is built with `output: "export"` to static HTML/JS and serv
 
 - **Language:** Python 3.12 (backend) + TypeScript (frontend).
 - **Agent framework:** LangGraph (extends the repo skeleton).
-- **LLM provider + model:** Google Gemini (google-genai SDK). Default `gemini-2.5-flash` for all nodes (plan/codegen/critique/answer/profiling summary/follow-ups). Env-configurable via `AGENT_LLM_MODEL` (default) plus per-node override constants; API key `AGENT_GEMINI_API_KEY`. The provider-agnostic `LLMClient` wrapper (skeleton `GeminiProvider`) keeps the abstraction. Cheaper-model tiering per node is a future option; the Phase 1 default is a single Gemini model everywhere.
+- **LLM provider + model:** Google Gemini (google-genai SDK). Default `gemini-2.5-flash` for all nodes (plan/codegen/critique/answer/profiling summary/follow-ups). Env-configurable via `AGENT_LLM_MODEL` (default) plus per-node override constants; API key `AGENT_GEMINI_API_KEY`. The provider-agnostic `LLMClient` wrapper (skeleton `GeminiProvider`) keeps the abstraction and captures real `usage_metadata` (`prompt_token_count` / `candidates_token_count`) per call for cost metering (Phase 3). Cost is computed from token counts × per-token price settings `AGENT_COST_INPUT_PER_MTOK` / `AGENT_COST_OUTPUT_PER_MTOK` (defaults set to current `gemini-2.5-flash` pricing). Cheaper-model tiering per node is a future option; the Phase 1 default is a single Gemini model everywhere.
 - **Backend:** FastAPI (serves API + static `/app/`).
 - **Database + ORM:** SQLite + SQLAlchemy 2.0 (Mapped/DeclarativeBase, per skeleton); Alembic for migrations.
 - **Frontend:** Next.js 15 + React 19 (static export) + Tailwind.
@@ -92,8 +92,8 @@ The Next.js frontend is built with `output: "export"` to static HTML/JS and serv
 | sqlalchemy | ^2.0 | ORM |
 | alembic | ^1.13 | DB migrations |
 | fastapi / uvicorn | latest | API + static serving |
-| sse-starlette | ^2 | SSE streaming (Phase 3) |
-| plotly (frontend: react-plotly / recharts) | — | Interactive charts (Phase 3) |
+| sse-starlette | ^2 | Single-request SSE streaming (Phase 3) |
+| recharts (frontend) | ^2 | Interactive charts/tables rendering (Phase 3) |
 | @playwright/test | latest | Frontend E2E |
 
 **Avoid:** heavyweight sandboxing services or remote code runners (local-first, single user); Docker-in-the-loop for execution; sending full datasets to the LLM (sample rows only); PostgreSQL/other DBs (SQLite is the chosen production DB here).

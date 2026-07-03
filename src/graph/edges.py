@@ -2,6 +2,16 @@ from config.settings import get_settings
 from graph.state import AgentState
 
 
+def route_after_clarify(state: AgentState) -> str:
+    """Entry gate: fatal error → handle_error; ambiguous → end (return the
+    clarifying question, no code runs); clear → plan."""
+    if state.get("error"):
+        return "handle_error"
+    if state.get("needs_clarification"):
+        return "end"
+    return "plan"
+
+
 def route_after_observe(state: AgentState) -> str:
     """ok → finalize; needs-fix under budget → generate_code; else finalize."""
     if state.get("error"):

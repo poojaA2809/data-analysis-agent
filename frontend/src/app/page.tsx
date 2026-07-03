@@ -6,20 +6,20 @@ import { CodePanel } from './components/CodePanel'
 import { ProfileCard } from './components/ProfileCard'
 import { HistorySidebar } from './components/HistorySidebar'
 import { DatasetPicker } from './components/DatasetPicker'
-import {
-  ChartsPlaceholder,
-  CostBarStub,
-  FollowupChipsStub,
-  StepStreamStub,
-} from './components/stubs'
+import { RichOutput } from './components/RichOutput'
+import { CostBar } from './components/CostBar'
+import { FollowupChips } from './components/FollowupChips'
+import { StepIndicator } from './components/StepIndicator'
 import {
   askQuestion,
+  askQuestionStream,
   createSession,
   getSession,
   listSessions,
   uploadDataset,
   type MessageData,
   type SessionSummary,
+  type StreamEvent,
 } from './lib/api'
 
 type Turn = {
@@ -29,6 +29,14 @@ type Turn = {
   code: string | null
   status: string
   error: string | null
+  clarify: string | null
+  data: MessageData | null
+}
+
+type QueryCost = {
+  prompt_tokens: number | null
+  completion_tokens: number | null
+  cost_usd: number | null
 }
 
 const LAST_SESSION_KEY = 'daa.lastSessionId'
@@ -41,6 +49,9 @@ export default function Home() {
   const [turns, setTurns] = useState<Turn[]>([])
   const [asking, setAsking] = useState(false)
   const [askError, setAskError] = useState<string | null>(null)
+  const [stepLabel, setStepLabel] = useState<string | null>(null)
+  const [queryCost, setQueryCost] = useState<QueryCost | null>(null)
+  const [usageKey, setUsageKey] = useState(0)
 
   const [sessions, setSessions] = useState<SessionSummary[]>([])
   const [historyLoading, setHistoryLoading] = useState(true)
@@ -86,8 +97,9 @@ export default function Home() {
       )
       setSelected(new Set(detail.datasets.map((d) => d.id)))
       // Rebuild the conversation thread from run history: each run -> a Q&A turn
-      // carrying its answer + generated code, so the workspace shows prior turns
-      // (incl. the answer pane) after a reload.
+      // carrying its answer + generated code. Prior runs have no persisted
+      // charts/cost, so restored turns render answer + code only (rich output
+      // and per-query cost are omitted for them).
       const restoredTurns: Turn[] = (detail.runs ?? []).map((r) => {
         const failed = r.status === 'failed' || !r.answer_text
         return {
@@ -97,16 +109,17 @@ export default function Home() {
           code: r.generated_code,
           status: r.status ?? (r.answer_text ? 'completed' : 'failed'),
           error: failed ? 'The analysis failed. Try asking again.' : null,
+          clarify: null,
+          data: null,
         }
       })
       setTurns(restoredTurns)
       setAskError(null)
+      setQueryCost(null)
     } catch (err) {
       // Surface the failure instead of hiding it — a silent reset here is what
       // made a reload look like "No questions yet…" when restore actually broke.
       console.error(`Failed to restore session ${id}:`, err)
-      // If a stored session no longer exists, drop the stale pointer so the next
-      // load starts fresh rather than repeatedly failing.
       const status = (err as { status?: number } | null)?.status
       if (status === 404) {
         try {
@@ -139,6 +152,8 @@ export default function Home() {
     setTurns([])
     setAskError(null)
     setQuestion('')
+    setStepLabel(null)
+    setQueryCost(null)
     try {
       localStorage.removeItem(LAST_SESSION_KEY)
     } catch {
@@ -173,68 +188,145 @@ export default function Home() {
     void refreshHistory()
   }
 
+  // Apply a finalized MessageData payload to the active turn (both the streamed
+  // and the synchronous-fallback path funnel through here).
+  const finalizeTurn = useCallback((turnId: string, res: MessageData) => {
+    const clarify = res.needs_clarification ?? null
+    const failed = res.status === 'failed' || (!res.answer_text && !clarify)
+    setTurns((prev) =>
+      prev.map((t) =>
+        t.id === turnId
+          ? {
+              ...t,
+              status: res.status,
+              answer: clarify ? null : res.answer_text,
+              code: clarify ? null : res.generated_code,
+              clarify,
+              data: clarify ? null : res,
+              error: failed
+                ? 'The analysis failed. Try rephrasing your question or re-uploading the file.'
+                : null,
+            }
+          : t,
+      ),
+    )
+    setQueryCost({
+      prompt_tokens: res.prompt_tokens,
+      completion_tokens: res.completion_tokens,
+      cost_usd: res.cost_usd,
+    })
+  }, [])
+
+  const runQuestion = useCallback(
+    async (rawQuestion: string) => {
+      const q = rawQuestion.trim()
+      if (!q || asking) return
+      if (files.length === 0) {
+        setAskError('Upload a CSV or Excel file first, then ask a question about it.')
+        return
+      }
+      const datasetIds = files.filter((f) => selected.has(f.datasetId)).map((f) => f.datasetId)
+      if (datasetIds.length === 0) {
+        setAskError('Select at least one dataset to include in your question.')
+        return
+      }
+      setAskError(null)
+      setAsking(true)
+      setStepLabel('Starting…')
+
+      const turnId = crypto.randomUUID()
+      setTurns((prev) => [
+        ...prev,
+        {
+          id: turnId,
+          question: q,
+          answer: null,
+          code: null,
+          status: 'running',
+          error: null,
+          clarify: null,
+          data: null,
+        },
+      ])
+      setQuestion('')
+      queueMicrotask(() => bottomRef.current?.scrollIntoView({ behavior: 'smooth' }))
+
+      try {
+        let sid = sessionRef.current
+        if (!sid) {
+          const s = await createSession()
+          sid = s.session_id
+          setSession(sid)
+        }
+
+        let streamedText = ''
+        let sawClarify = false
+
+        const onEvent = (ev: StreamEvent) => {
+          if (ev.kind === 'step') {
+            setStepLabel(ev.label)
+          } else if (ev.kind === 'token') {
+            streamedText += ev.text
+            const text = streamedText
+            setTurns((prev) =>
+              prev.map((t) => (t.id === turnId ? { ...t, answer: text } : t)),
+            )
+          } else if (ev.kind === 'clarify') {
+            sawClarify = true
+            const cq = ev.question
+            setTurns((prev) =>
+              prev.map((t) =>
+                t.id === turnId ? { ...t, clarify: cq, answer: null, code: null } : t,
+              ),
+            )
+          } else if (ev.kind === 'done') {
+            finalizeTurn(turnId, ev.data)
+          }
+        }
+
+        let result: MessageData | null
+        try {
+          result = await askQuestionStream(sid, q, datasetIds, onEvent)
+          // If the stream ended without a terminal `done` (and it wasn't a
+          // clarify turn), treat it as a failure and fall back.
+          if (!result && !sawClarify) {
+            throw new Error('Stream ended without a final result.')
+          }
+        } catch (streamErr) {
+          console.warn('Streaming ask failed; falling back to synchronous ask.', streamErr)
+          setStepLabel('Analyzing…')
+          const res = await askQuestion(sid, q, datasetIds)
+          finalizeTurn(turnId, res)
+        }
+
+        void refreshHistory()
+        setUsageKey((k) => k + 1)
+      } catch (err) {
+        const msg =
+          err instanceof Error ? err.message : 'Something went wrong running the analysis.'
+        setTurns((prev) =>
+          prev.map((t) => (t.id === turnId ? { ...t, status: 'failed', error: msg } : t)),
+        )
+      } finally {
+        setAsking(false)
+        setStepLabel(null)
+        queueMicrotask(() => bottomRef.current?.scrollIntoView({ behavior: 'smooth' }))
+      }
+    },
+    [asking, files, selected, refreshHistory, finalizeTurn],
+  )
+
   async function handleAsk(e: React.FormEvent) {
     e.preventDefault()
-    const q = question.trim()
-    if (!q || asking) return
-    if (files.length === 0) {
-      setAskError('Upload a CSV or Excel file first, then ask a question about it.')
-      return
-    }
-    const datasetIds = files.filter((f) => selected.has(f.datasetId)).map((f) => f.datasetId)
-    if (datasetIds.length === 0) {
-      setAskError('Select at least one dataset to include in your question.')
-      return
-    }
-    setAskError(null)
-    setAsking(true)
-
-    const turnId = crypto.randomUUID()
-    setTurns((prev) => [
-      ...prev,
-      { id: turnId, question: q, answer: null, code: null, status: 'running', error: null },
-    ])
-    setQuestion('')
-    queueMicrotask(() => bottomRef.current?.scrollIntoView({ behavior: 'smooth' }))
-
-    try {
-      let sid = sessionRef.current
-      if (!sid) {
-        const s = await createSession()
-        sid = s.session_id
-        setSession(sid)
-      }
-      const res: MessageData = await askQuestion(sid, q, datasetIds)
-      const failed = res.status === 'failed' || !res.answer_text
-      setTurns((prev) =>
-        prev.map((t) =>
-          t.id === turnId
-            ? {
-                ...t,
-                status: res.status,
-                answer: res.answer_text,
-                code: res.generated_code,
-                error: failed
-                  ? 'The analysis failed. Try rephrasing your question or re-uploading the file.'
-                  : null,
-              }
-            : t,
-        ),
-      )
-      void refreshHistory()
-    } catch (err) {
-      const msg =
-        err instanceof Error ? err.message : 'Something went wrong running the analysis.'
-      setTurns((prev) =>
-        prev.map((t) =>
-          t.id === turnId ? { ...t, status: 'failed', error: msg } : t,
-        ),
-      )
-    } finally {
-      setAsking(false)
-      queueMicrotask(() => bottomRef.current?.scrollIntoView({ behavior: 'smooth' }))
-    }
+    await runQuestion(question)
   }
+
+  const handleFollowup = useCallback(
+    (q: string) => {
+      void runQuestion(q)
+    },
+    [runQuestion],
+  )
 
   const profiledFiles = files.filter((f) => f.profile)
 
@@ -332,7 +424,7 @@ export default function Home() {
               )}
             </form>
 
-            <StepStreamStub />
+            <StepIndicator label={stepLabel} />
 
             <section className="mt-6 space-y-6" aria-label="Conversation" data-testid="conversation">
               {turns.length === 0 && (
@@ -348,13 +440,24 @@ export default function Home() {
                 <article key={turn.id} className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
                   <p className="mb-3 text-sm font-semibold text-gray-900">{turn.question}</p>
 
-                  {turn.status === 'running' && !turn.answer && !turn.error && (
+                  {turn.status === 'running' && !turn.answer && !turn.error && !turn.clarify && (
                     <div className="flex items-center gap-2 text-sm text-gray-500">
                       <svg className="h-4 w-4 animate-spin text-blue-600" viewBox="0 0 24 24" fill="none" aria-hidden="true">
                         <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                         <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 0 1 8-8V0C5.4 0 0 5.4 0 12h4z" />
                       </svg>
                       Analyzing…
+                    </div>
+                  )}
+
+                  {turn.clarify && (
+                    <div
+                      data-testid="clarify-prompt"
+                      role="status"
+                      className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800"
+                    >
+                      <p className="mb-1 font-semibold">I need a bit more detail</p>
+                      <p className="leading-relaxed">{turn.clarify}</p>
                     </div>
                   )}
 
@@ -375,10 +478,15 @@ export default function Home() {
 
                   {turn.code && <CodePanel code={turn.code} />}
 
-                  {turn.answer && (
-                    <div className="mt-4 space-y-4">
-                      <ChartsPlaceholder />
-                      <FollowupChipsStub />
+                  {turn.data && <RichOutput data={turn.data} />}
+
+                  {turn.data && turn.data.followups && turn.data.followups.length > 0 && (
+                    <div className="mt-4">
+                      <FollowupChips
+                        followups={turn.data.followups}
+                        onPick={handleFollowup}
+                        disabled={asking}
+                      />
                     </div>
                   )}
                 </article>
@@ -389,7 +497,7 @@ export default function Home() {
         </main>
       </div>
 
-      <CostBarStub />
+      <CostBar query={queryCost} refreshKey={usageKey} />
     </div>
   )
 }

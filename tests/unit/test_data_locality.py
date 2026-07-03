@@ -25,6 +25,10 @@ class _SpyLLM:
         _SpyLLM.calls.append((prompt, system))
         return "print('result', 1)"
 
+    def call_model_metered(self, prompt: str, *, system: str | None = None):
+        _SpyLLM.calls.append((prompt, system))
+        return "print('result', 1)", 0, 0
+
 
 def _make_wide_csv(tmp_path):
     rows = _SAMPLE_ROWS + 15  # comfortably more than the sample cap

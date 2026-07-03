@@ -103,7 +103,7 @@ def ask_question(
     # Commit the user message + session before running the agent (separate txn).
     session.commit()
 
-    run_id = run_agent(
+    payload = run_agent(
         session_id=session_id,
         question=req.question,
         dataset_paths=dataset_paths,
@@ -112,20 +112,7 @@ def ask_question(
         messages=history,
     )
 
-    run = session.get(RunRow, run_id)
-    if run is None:
-        raise api_error("NOT_FOUND", "Run not found after execution", 500)
-
-    return ok(
-        AskResponse(
-            run_id=run.id,
-            status=run.status,
-            answer_text=run.answer_text,
-            generated_code=run.generated_code,
-            step_count=run.step_count,
-            error=run.error_message,
-        ).model_dump()
-    )
+    return ok(AskResponse(**payload).model_dump())
 
 
 @router.get("/sessions/{session_id}")

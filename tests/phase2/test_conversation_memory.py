@@ -34,13 +34,13 @@ def test_followup_uses_prior_conversation(api_client, monkeypatch):
 
     # Spy on the prompts sent to the model during turn 2 (delegating to the real API).
     captured: list[str] = []
-    real_call = llm_client.LLMClient.call_model
+    real_call = llm_client.LLMClient.call_model_metered
 
     def _spy(self, prompt, *, system=None):
         captured.append(prompt)
         return real_call(self, prompt, system=system)
 
-    monkeypatch.setattr(llm_client.LLMClient, "call_model", _spy)
+    monkeypatch.setattr(llm_client.LLMClient, "call_model_metered", _spy)
 
     # Turn 2: a follow-up that relies on the prior turn.
     r2 = api_client.post(

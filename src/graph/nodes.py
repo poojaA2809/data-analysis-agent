@@ -9,6 +9,7 @@ from pathlib import Path
 
 from analysis.executor import execute_python
 from analysis.profiler import profile_dataframe
+from analysis.render import parse_finalize
 from config.settings import get_settings
 from graph.state import AgentState
 from llm.client import LLMClient
@@ -20,6 +21,15 @@ _log = get_logger("graph.nodes")
 
 def _prompt(name: str) -> str:
     return (_PROMPT_DIR / f"{name}.md").read_text(encoding="utf-8").strip()
+
+
+def _metered(state: AgentState, text_pt_ct: tuple[str, int, int]) -> dict:
+    """Return the token-accumulation delta for a metered LLM call."""
+    _text, pt, ct = text_pt_ct
+    return {
+        "prompt_tokens": state.get("prompt_tokens", 0) + pt,
+        "completion_tokens": state.get("completion_tokens", 0) + ct,
+    }
 
 
 def _schema_block(schemas: list[dict]) -> str:
@@ -66,6 +76,48 @@ def _strip_code_fences(text: str) -> str:
     return text.strip()
 
 
+def clarify(state: AgentState) -> AgentState:
+    """Entry gate: if the question is too vague to attempt against the schema,
+    set needs_clarification and route to END. CONSERVATIVE — fails open (runs
+    the analysis) on any parse/LLM error so normal questions always proceed."""
+    try:
+        prompt = (
+            f"Question: {state['question']}\n\n"
+            f"{_schema_block(state.get('dataset_schemas', []))}"
+        )
+        res = LLMClient().call_model_metered(prompt, system=_prompt("clarify"))
+        delta = _metered(state, res)
+        clear, question = _parse_clarify(res[0])
+        if clear:
+            _log.info("node.clarify", run_id=state.get("run_id"), clear=True)
+            return {**state, **delta, "needs_clarification": None}
+        _log.info("node.clarify", run_id=state.get("run_id"), clear=False)
+        return {
+            **state,
+            **delta,
+            "needs_clarification": question,
+            "status": "needs_clarification",
+        }
+    except Exception as exc:  # noqa: BLE001 — fail open: proceed to plan.
+        _log.info("clarify.fallback", run_id=state.get("run_id"), error=str(exc))
+        return {**state, "needs_clarification": None}
+
+
+def _parse_clarify(text: str) -> tuple[bool, str | None]:
+    m = re.search(r"\{.*\}", text or "", re.DOTALL)
+    if m:
+        try:
+            obj = json.loads(m.group(0))
+            if obj.get("clear") is False:
+                q = obj.get("question") or "Could you clarify what you'd like to know?"
+                return False, str(q)
+            return True, None
+        except json.JSONDecodeError:
+            pass
+    # No parseable JSON → be conservative and proceed.
+    return True, None
+
+
 def plan(state: AgentState) -> AgentState:
     try:
         prompt = (
@@ -73,9 +125,9 @@ def plan(state: AgentState) -> AgentState:
             f"Question: {state['question']}\n\n"
             f"{_schema_block(state.get('dataset_schemas', []))}"
         )
-        out = LLMClient().call_model(prompt, system=_prompt("plan"))
-        _log.info("node.plan", run_id=state.get("run_id"), plan_len=len(out))
-        return {**state, "plan": out}
+        res = LLMClient().call_model_metered(prompt, system=_prompt("plan"))
+        _log.info("node.plan", run_id=state.get("run_id"), plan_len=len(res[0]))
+        return {**state, **_metered(state, res), "plan": res[0]}
     except Exception as exc:  # noqa: BLE001
         return {**state, "error": f"plan failed: {exc}"}
 
@@ -95,11 +147,16 @@ def generate_code(state: AgentState) -> AgentState:
                 f"Critique: {state.get('critique')}\n"
                 "Fix the problem and produce corrected code."
             )
-        out = LLMClient().call_model(prompt, system=_prompt("generate_code"))
-        code = _strip_code_fences(out)
+        res = LLMClient().call_model_metered(prompt, system=_prompt("generate_code"))
+        code = _strip_code_fences(res[0])
         step = state.get("step_count", 0) + 1
         _log.info("node.generate_code", run_id=state.get("run_id"), step=step)
-        return {**state, "generated_code": code, "step_count": step}
+        return {
+            **state,
+            **_metered(state, res),
+            "generated_code": code,
+            "step_count": step,
+        }
     except Exception as exc:  # noqa: BLE001
         return {**state, "error": f"generate_code failed: {exc}"}
 
@@ -131,14 +188,19 @@ def observe(state: AgentState) -> AgentState:
             f"result: {state.get('execution_result', '')}\n"
             f"error: {state.get('execution_error')}"
         )
-        out = LLMClient().call_model(prompt, system=_prompt("observe"))
-        verdict, notes = _parse_verdict(out)
+        res = LLMClient().call_model_metered(prompt, system=_prompt("observe"))
+        verdict, notes = _parse_verdict(res[0])
         # Hard override: a real execution error is never "ok".
         if state.get("execution_error"):
             verdict = "needs-fix"
             notes = notes or state.get("execution_error", "")
         _log.info("node.observe", run_id=state.get("run_id"), verdict=verdict)
-        return {**state, "critique": notes, "critique_verdict": verdict}
+        return {
+            **state,
+            **_metered(state, res),
+            "critique": notes,
+            "critique_verdict": verdict,
+        }
     except Exception as exc:  # noqa: BLE001
         # Reflection failure is not fatal — default to ok if we have a result.
         verdict = "needs-fix" if state.get("execution_error") else "ok"
@@ -175,14 +237,27 @@ def finalize(state: AgentState) -> AgentState:
                 "LOW-CONFIDENCE. Explain briefly what was attempted and give the "
                 "best-effort answer."
             )
-        answer = LLMClient().call_model(prompt, system=_prompt("finalize"))
+        res = LLMClient().call_model_metered(prompt, system=_prompt("finalize"))
+        rich = parse_finalize(res[0])
         _log.info(
             "node.finalize",
             run_id=state.get("run_id"),
             low_confidence=low_conf,
             step_count=state.get("step_count"),
+            charts=len(rich["charts"]),
+            key_stats=len(rich["key_stats"]),
+            followups=len(rich["followups"]),
         )
-        return {**state, "answer_text": answer, "status": "completed"}
+        return {
+            **state,
+            **_metered(state, res),
+            "answer_text": rich["answer"],
+            "charts": rich["charts"],
+            "tables": rich["tables"],
+            "key_stats": rich["key_stats"],
+            "followups": rich["followups"],
+            "status": "completed",
+        }
     except Exception as exc:  # noqa: BLE001
         return {**state, "error": f"finalize failed: {exc}"}
 

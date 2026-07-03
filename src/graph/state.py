@@ -24,7 +24,17 @@ class AgentState(TypedDict, total=False):
 
     # Output
     answer_text: str
+    charts: list                    # P3: chart specs
+    tables: list                    # P3: summary table specs
+    key_stats: list                 # P3: highlighted stats
+    followups: list                 # P3: 2-3 suggested questions
+    needs_clarification: str | None # P3: clarifying question, if unsure
+
+    # Metering (P3)
+    prompt_tokens: int
+    completion_tokens: int
+    cost_usd: float
 
     # Control
     error: str | None
-    status: str                     # completed | failed
+    status: str                     # completed | failed | needs_clarification

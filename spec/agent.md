@@ -13,8 +13,8 @@ Patterns from `harness/patterns/agentic-ai.md` in use:
 - **#12 Exception Handling & Recovery** — errors from execution feed the reflection loop; fatal errors route to `handle_error`.
 - **#8 Memory Management** — conversation history + prior runs loaded from SQLite (Phase 2).
 - **#16 Resource-Aware Optimization** — sample-rows-only prompts (a single Gemini model for all nodes in Phase 1; cheaper-model tiering is a future option).
-- **#13 Human-in-the-Loop** (Phase 3) — `clarify` pauses for a clarifying question on low confidence.
-- **#19 Evaluation & Monitoring** — structured per-run logging + token/cost metering (Phase 3).
+- **#13 Human-in-the-Loop** (Phase 3, REAL) — `clarify` is the graph entry-gate: on an ambiguous/low-confidence question it returns a clarifying question and ENDs without running code.
+- **#19 Evaluation & Monitoring** (Phase 3, REAL) — structured per-run logging + real Gemini token/cost metering summed across all LLM calls in a run.
 
 ---
 
@@ -78,13 +78,13 @@ class AgentState(TypedDict, total=False):
     # Output
     answer_text: str                # finalize output
     profile: dict                   # P2: auto-profile of a new upload
-    charts: list                    # P3: chart specs
-    tables: list                    # P3: summary table specs
-    key_stats: list                 # P3: highlighted stats
-    followups: list[str]            # P3: 2–3 suggested questions
-    needs_clarification: str | None # P3: clarifying question, if unsure
+    charts: list                    # P3 ACTIVE: chart specs {type,title,x_label,y_label,data}
+    tables: list                    # P3 ACTIVE: summary table specs {title,columns,rows}
+    key_stats: list                 # P3 ACTIVE: highlighted stats {label,value,delta?}
+    followups: list[str]            # P3 ACTIVE: 2–3 suggested questions
+    needs_clarification: str | None # P3 ACTIVE: clarifying question from the entry gate, if unsure
 
-    # Metering (P3)
+    # Metering (P3 ACTIVE — summed across all Gemini calls in the run)
     prompt_tokens: int
     completion_tokens: int
     cost_usd: float
@@ -98,7 +98,7 @@ class AgentState(TypedDict, total=False):
 
 ## Nodes / Steps
 
-Phase-1 REAL nodes: `plan`, `generate_code`, `execute_code`, `observe`, `finalize`, `handle_error`. Phase-2: `profile` (upload path). Phase-3: `suggest_followups`, `clarify`, and rich-output enrichment inside `finalize`.
+Phase-1 REAL nodes: `plan`, `generate_code`, `execute_code`, `observe`, `finalize`, `handle_error`. Phase-2 REAL: `profile` (upload path). Phase-3 REAL: `clarify` (entry-gate), `render` + `suggest_followups` (folded into the finalize stage), and token/cost metering across all LLM calls.
 
 ### `plan`
 **Reads:** `question`, `dataset_schemas`, `messages`. **Writes:** `plan`. **LLM:** yes (Gemini). Produces a short numbered approach for answering the question given the schema + sample rows.
@@ -116,7 +116,11 @@ Phase-1 REAL nodes: `plan`, `generate_code`, `execute_code`, `observe`, `finaliz
 **Reads:** `execution_result`, `execution_error`, `execution_stdout`, `question`. **Writes:** `critique`. **LLM:** yes (Gemini). Verdict: *ok* → finalize, or *needs-fix* → generate_code (if under step budget).
 
 ### `finalize`
-**Reads:** `question`, `execution_result`, `execution_stdout`, `generated_code`. **Writes:** `answer_text`, `status="completed"` (P3: `charts`, `tables`, `key_stats`, `followups`). **LLM:** yes (Gemini answer + follow-ups). On step-budget exhaustion, writes a best-effort answer flagged low-confidence with what it tried.
+**Reads:** `question`, `execution_result`, `execution_stdout`, `generated_code`. **Writes:** `answer_text`, `status="completed"`, and (Phase 3, REAL) `charts`, `tables`, `key_stats`, `followups`, plus the run's summed `prompt_tokens`/`completion_tokens`/`cost_usd`. **LLM:** yes (Gemini answer + follow-ups). On step-budget exhaustion, writes a best-effort answer flagged low-confidence with what it tried.
+
+Phase 3 folds two sub-steps into the finalize stage:
+- **render** (`src/analysis/render.py`, no LLM) — derives from the local `execution_result`: `charts` = list of `{type: "bar"|"line"|"scatter", title, x_label, y_label, data: [{x, y, series?}]}`; `tables` = list of `{title, columns: [str], rows: [[cell,…]]}`; `key_stats` = list of `{label, value, delta?}` (totals, deltas, top movers). A non-chartable scalar result yields key_stats only.
+- **suggest_followups** (Gemini) — 2–3 answerable next questions (`followups`) grounded in the dataset schema.
 
 ### `handle_error`
 **Reads:** `error`, `run_id`. **Writes:** `status="failed"`. Updates run row error + timestamp; terminates.
@@ -124,8 +128,8 @@ Phase-1 REAL nodes: `plan`, `generate_code`, `execute_code`, `observe`, `finaliz
 ### `profile` (Phase 2)
 **Reads:** `dataset_paths`. **Writes:** `profile`. **LLM:** Gemini (narrates deterministic stats from `profile_dataframe`). Runs on the upload path, not the ask path.
 
-### `clarify` (Phase 3)
-**Reads:** `question`, `dataset_schemas`. **Writes:** `needs_clarification`. Entry-gate before `plan`: if the question is too ambiguous to answer, emit a clarifying question and END without running code.
+### `clarify` (Phase 3, REAL)
+**Reads:** `question`, `dataset_schemas`. **Writes:** `needs_clarification`. **LLM:** yes (Gemini). The **graph entry node**: if the question is too ambiguous/low-confidence to answer, it sets `needs_clarification` (the clarifying-question string) and the conditional edge routes to END without running code; a clear question routes to `plan`.
 
 ---
 
@@ -134,6 +138,10 @@ Phase-1 REAL nodes: `plan`, `generate_code`, `execute_code`, `observe`, `finaliz
 ```
 START
   │
+  ▼
+clarify ─(ambiguous)─► END (return clarifying question, no code run)   [P3 REAL entry gate]
+  │
+  └─(clear)─►
   ▼
 plan ──(error)──► handle_error ──► END
   │
@@ -145,15 +153,16 @@ execute_code
   │
   ▼
 observe ──(ok)──────────────► finalize ──► END
-  │  │
+  │  │                         (P3 REAL: render charts/tables/key_stats +
+  │  │                          suggest_followups + sum tokens/cost)
   │  └─(needs-fix & steps<MAX)──► generate_code   (loop)
   │
   └─(needs-fix & steps>=MAX)───► finalize (low-confidence) ──► END
 
-(P3) START ─► clarify ─(ambiguous)─► END(clarifying question)
-                     └─(clear)─────► plan
 (P2) upload path: START ─► profile ─► END   (separate entry, not the ask graph)
 ```
+
+`clarify` is the graph entry point (Phase 3). In Phase 1/2 the entry point is `plan`; Phase 3 prepends `clarify` with a conditional edge (ambiguous → END, clear → plan).
 
 **Conditional edges:**
 
@@ -227,14 +236,18 @@ Structured request/response logging is wired in **Phase 1** (not deferred). No L
 ```python
 graph = StateGraph(AgentState)
 
+graph.add_node("clarify", clarify)          # P3 REAL — entry gate
 graph.add_node("plan", plan)
 graph.add_node("generate_code", generate_code)
 graph.add_node("execute_code", execute_code)
 graph.add_node("observe", observe)
-graph.add_node("finalize", finalize)
+graph.add_node("finalize", finalize)        # P3: also runs render + suggest_followups + token/cost sum
 graph.add_node("handle_error", handle_error)
 
-graph.set_entry_point("plan")   # P3: prepend "clarify" as entry with conditional → plan
+graph.set_entry_point("clarify")            # P3 REAL entry gate (Phase 1/2 entry was "plan")
+graph.add_conditional_edges("clarify",
+    lambda s: END if s.get("needs_clarification") else "plan",
+    {END: END, "plan": "plan"})
 
 graph.add_conditional_edges("plan",
     lambda s: "handle_error" if s.get("error") else "generate_code")

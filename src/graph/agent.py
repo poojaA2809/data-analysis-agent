@@ -2,6 +2,7 @@ from langgraph.graph import StateGraph, END
 
 from graph.state import AgentState
 from graph.nodes import (
+    clarify,
     plan,
     generate_code,
     execute_code,
@@ -9,11 +10,12 @@ from graph.nodes import (
     finalize,
     handle_error,
 )
-from graph.edges import route_after_observe
+from graph.edges import route_after_clarify, route_after_observe
 
 
 def _build_graph():
     g = StateGraph(AgentState)
+    g.add_node("clarify", clarify)
     g.add_node("plan", plan)
     g.add_node("generate_code", generate_code)
     g.add_node("execute_code", execute_code)
@@ -21,8 +23,13 @@ def _build_graph():
     g.add_node("finalize", finalize)
     g.add_node("handle_error", handle_error)
 
-    g.set_entry_point("plan")
+    g.set_entry_point("clarify")
 
+    g.add_conditional_edges(
+        "clarify",
+        route_after_clarify,
+        {"handle_error": "handle_error", "plan": "plan", "end": END},
+    )
     g.add_conditional_edges(
         "plan",
         lambda s: "handle_error" if s.get("error") else "generate_code",

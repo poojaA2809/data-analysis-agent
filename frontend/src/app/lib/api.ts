@@ -103,6 +103,34 @@ export type SessionDetail = {
   runs: SessionRun[]
 }
 
+// ---- Rich output shapes (Phase 3) ----
+export type ChartPoint = {
+  x?: string | number | null
+  y?: number | null
+  series?: string | null
+  [key: string]: unknown
+}
+
+export type ChartSpec = {
+  type?: 'bar' | 'line' | 'scatter' | string
+  title?: string | null
+  x_label?: string | null
+  y_label?: string | null
+  data?: ChartPoint[] | null
+}
+
+export type TableSpec = {
+  title?: string | null
+  columns?: string[] | null
+  rows?: unknown[][] | null
+}
+
+export type KeyStat = {
+  label?: string | null
+  value?: string | number | null
+  delta?: string | number | null
+}
+
 export type MessageData = {
   run_id: string
   status: string
@@ -110,13 +138,21 @@ export type MessageData = {
   generated_code: string | null
   step_count: number | null
   needs_clarification: string | null
-  charts: unknown[]
-  tables: unknown[]
-  key_stats: unknown[]
-  followups: unknown[]
+  charts: ChartSpec[]
+  tables: TableSpec[]
+  key_stats: KeyStat[]
+  followups: string[]
   prompt_tokens: number | null
   completion_tokens: number | null
   cost_usd: number | null
+  error?: string | null
+}
+
+export type DailyUsage = {
+  date: string
+  prompt_tokens: number
+  completion_tokens: number
+  cost_usd: number
 }
 
 /** Thrown for any non-2xx response or an envelope carrying an `error`. */
@@ -214,4 +250,117 @@ export async function askQuestion(
     body: JSON.stringify({ question, dataset_ids: datasetIds }),
   })
   return unwrap<MessageData>(res)
+}
+
+/** Fetch today's running token + cost total (Phase 3). */
+export async function getDailyUsage(): Promise<DailyUsage> {
+  const res = await fetch('/usage/daily', { method: 'GET' })
+  return unwrap<DailyUsage>(res)
+}
+
+// ---- Streaming ask (Phase 3) ----
+// Events surfaced from the SSE stream to the UI layer.
+export type StreamEvent =
+  | { kind: 'step'; label: string }
+  | { kind: 'token'; text: string }
+  | { kind: 'clarify'; question: string }
+  | { kind: 'done'; data: MessageData }
+
+/**
+ * Ask a question over the SSE streaming endpoint. Consumes `text/event-stream`
+ * with fetch() + a ReadableStream reader, parsing SSE frames (an `event:` line
+ * plus one or more `data:` lines, frames separated by a blank line). Each parsed
+ * event is delivered to `onEvent`. The final `done` payload is also returned.
+ *
+ * Throws if the stream cannot be established or ends without a terminal event —
+ * callers fall back to the synchronous `askQuestion` on any throw.
+ */
+export async function askQuestionStream(
+  sessionId: string,
+  question: string,
+  datasetIds: string[],
+  onEvent: (ev: StreamEvent) => void,
+  signal?: AbortSignal,
+): Promise<MessageData | null> {
+  const res = await fetch(`/sessions/${sessionId}/messages/stream`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'text/event-stream',
+    },
+    body: JSON.stringify({ question, dataset_ids: datasetIds }),
+    signal,
+  })
+
+  if (!res.ok || !res.body) {
+    throw new ApiError(`Streaming request failed (${res.status}).`, {
+      status: res.status,
+    })
+  }
+
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let final: MessageData | null = null
+
+  // Dispatch a single parsed SSE frame ("event:" + "data:" lines).
+  function dispatch(frame: string) {
+    let eventName = 'message'
+    const dataLines: string[] = []
+    for (const rawLine of frame.split('\n')) {
+      const line = rawLine.replace(/\r$/, '')
+      if (line.startsWith(':')) continue // comment/heartbeat
+      if (line.startsWith('event:')) {
+        eventName = line.slice(6).trim()
+      } else if (line.startsWith('data:')) {
+        dataLines.push(line.slice(5).replace(/^ /, ''))
+      }
+    }
+    if (dataLines.length === 0) return
+    let payload: unknown
+    try {
+      payload = JSON.parse(dataLines.join('\n'))
+    } catch {
+      return
+    }
+    const p = payload as Record<string, unknown>
+    switch (eventName) {
+      case 'step':
+        onEvent({ kind: 'step', label: String(p.label ?? '') })
+        break
+      case 'token':
+        onEvent({ kind: 'token', text: String(p.text ?? '') })
+        break
+      case 'clarify':
+        onEvent({ kind: 'clarify', question: String(p.question ?? '') })
+        break
+      case 'done':
+        final = payload as MessageData
+        onEvent({ kind: 'done', data: final })
+        break
+      default:
+        break
+    }
+  }
+
+  // Read the stream, splitting on blank-line frame separators.
+  for (;;) {
+    const { value, done } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    let sepIndex: number
+    // Frames are separated by a blank line: "\n\n" (tolerate "\r\n\r\n").
+    while (
+      (sepIndex = buffer.search(/\r?\n\r?\n/)) !== -1
+    ) {
+      const frame = buffer.slice(0, sepIndex)
+      const match = buffer.slice(sepIndex).match(/^\r?\n\r?\n/)
+      buffer = buffer.slice(sepIndex + (match ? match[0].length : 2))
+      if (frame.trim()) dispatch(frame)
+    }
+  }
+  // Flush any trailing frame not terminated by a blank line.
+  if (buffer.trim()) dispatch(buffer)
+
+  return final
 }

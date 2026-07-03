@@ -1,7 +1,7 @@
 # Capability: Rich Output (Charts, Tables, Key Stats)
 
 ## What It Does
-Enriches an answer with an interactive chart, a summary table, and highlighted key statistics derived from the execution result.
+Enriches an answer with interactive charts, summary tables, and highlighted key statistics derived from the execution result. Delivered in Phase 3 (a render step in the graph, folded into the finalize stage).
 
 ## Inputs
 | Input | Type | Source | Required |
@@ -12,18 +12,16 @@ Enriches an answer with an interactive chart, a summary table, and highlighted k
 ## Outputs
 | Output | Type | Destination |
 |--------|------|-------------|
-| charts | list[chart spec] | answer pane (Plotly/Recharts) |
-| tables | list[table spec] | answer pane |
-| key_stats | list[stat] | highlighted stat callouts |
+| charts | list of `{type: "bar"\|"line"\|"scatter", title, x_label, y_label, data: [{x, y, series?}]}` | answer pane (recharts, interactive) |
+| tables | list of `{title, columns: [str], rows: [[cell,…]]}` | answer pane |
+| key_stats | list of `{label, value, delta?}` | highlighted stat callouts (totals, deltas, top movers) |
 
 ## External Calls
-| System | Operation | On Failure |
-|--------|-----------|------------|
-| Google Gemini | choose chart type + which stats to highlight from the result | degrade to plain answer + table only |
+None required for the render step — charts/tables/key_stats are derived deterministically from the local execution result (`src/analysis/render.py`), no extra LLM call and no extra data sent to the LLM.
 
 ## Business Rules
-- Charts/tables are built from the already-computed local result — no extra data goes to the LLM beyond the (capped) result summary.
-- If the result is not chartable (e.g. a single scalar), only key stats are shown.
+- Charts/tables/key_stats are built from the already-computed local execution result — no extra data goes to the LLM.
+- If the result is not chartable (e.g. a single scalar), only key stats are shown (no broken chart).
 
 ## Success Criteria
 - [ ] A trend/group-by question yields at least one chart spec and one summary table in the response.

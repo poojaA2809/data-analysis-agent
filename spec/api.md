@@ -39,7 +39,7 @@ REST over HTTP (FastAPI), single origin with the static frontend at `/app/`. JSO
   "followups": [],
   "prompt_tokens": null, "completion_tokens": null, "cost_usd": null }
 ```
-Phase 1 returns `answer_text` + `generated_code` real; `charts/tables/key_stats/followups/*tokens*/cost_usd` are empty/null placeholders wired in later phases.
+Phase 1 returns `answer_text` + `generated_code` real; the remaining fields are wired in later phases. **As of Phase 3 all fields are POPULATED (real, not placeholders):** `charts`, `tables`, `key_stats` (from the render step), `followups` (2–3 suggested next questions), `prompt_tokens` / `completion_tokens` / `cost_usd` (summed across all Gemini calls in the run), and `needs_clarification` (set to a clarifying-question string when the clarify entry-gate triggers, in which case no code runs and `status`/answer reflect the early exit). This synchronous endpoint remains and returns the SAME enriched `AskResponse` as the streaming path below — it is the non-streaming path used by tests and as a fallback.
 
 **Errors:** 400 missing question / unknown dataset; 404 unknown session; 500 run failure (also reflected as `status: "failed"` with `error`).
 
@@ -53,8 +53,16 @@ Phase 1 returns `answer_text` + `generated_code` real; `charts/tables/key_stats/
 ### `GET /usage/daily` (Phase 3)
 **Purpose:** Running daily token + cost total. **Response:** `{ "date": "2026-07-03", "prompt_tokens": N, "completion_tokens": N, "cost_usd": 0.12 }`.
 
-### `GET /sessions/{id}/stream/{run_id}` (Phase 3)
-**Purpose:** SSE stream of `step`, `token`, and `done` events for a live run. **Response:** `text/event-stream`.
+### `POST /sessions/{id}/messages/stream` (Phase 3)
+**Purpose:** Ask a question and stream the run live over a single SSE request (sse-starlette). Same semantics as `POST /sessions/{id}/messages` (persists the user message, runs the agent, persists the run + assistant message) but emits progress as it happens. Consumed by the browser via `fetch` + `ReadableStream`. Chosen over a background-run + `GET`-stream design: single request, simpler, no separate run-start call.
+
+**Request:** `{ "question": "average order value by region?", "dataset_ids": ["uuid"] }`
+
+**Response:** `text/event-stream` emitting:
+- `event: step` — `{ "label": "Planning…" | "Generating code…" | "Running code…" | "Checking result…" | "Charting…" | "Writing answer…" }`, one per node as it runs.
+- `event: token` — `{ "text": "…" }`, answer text chunks streamed as `finalize` generates.
+- `event: clarify` — `{ "question": "…" }`, emitted if the clarify entry-gate triggers; the stream then ends without running code.
+- `event: done` — the full `AskResponse` payload: `{ run_id, status, answer_text, generated_code, step_count, needs_clarification, charts, tables, key_stats, followups, prompt_tokens, completion_tokens, cost_usd, error }`.
 
 ### `GET /health`
 Skeleton health check (unchanged).

@@ -25,6 +25,11 @@ class Settings(BaseSettings):
     anthropic_api_key: str = Field(default="")
     gemini_api_key: str = Field(default="")
 
+    # Cost metering — USD per 1M tokens (gemini-2.5-flash current pricing).
+    # AGENT_COST_INPUT_PER_MTOK / AGENT_COST_OUTPUT_PER_MTOK to override.
+    cost_input_per_mtok: float = Field(default=0.30)
+    cost_output_per_mtok: float = Field(default=2.50)
+
 
 _settings: Settings | None = None
 

@@ -1,4 +1,4 @@
-# Data-Analysis Agent — Phase 2 (Persist, profile, and combine)
+# Data-Analysis Agent — Phase 3 (Rich answers, transparency, and proactivity)
 
 > **Run every command from the repo root.** All Python commands are prefixed with `uv run`.
 
@@ -12,6 +12,14 @@ flags) on the upload path; sessions, datasets, messages, and full run history **
 across server restarts and are listable for a history sidebar; **conversation memory** injects
 prior turns so follow-up questions are understood; and you can load **multiple files (incl.
 Excel)** into one session and ask a single question that joins/compares them.
+
+**Phase 3 adds:** answers gain **charts, summary tables, and highlighted key stats** derived
+from the execution result (`rich_output`); every query reports **tokens + estimated cost**
+plus a **running daily total** (`cost_transparency`, `GET /usage/daily`); a **live SSE stream**
+emits step labels and streams the answer text as it is written (`POST
+/sessions/{id}/messages/stream`); and the agent suggests **2–3 follow-up questions** and asks a
+**clarifying question** when a request is too vague to attempt (`proactive_assist`). The
+synchronous `POST /sessions/{id}/messages` returns the SAME enriched payload as the stream.
 
 ## Setup & run
 
@@ -29,7 +37,9 @@ uv run python -m src
 
 Config (env, prefix `AGENT_`): `AGENT_GEMINI_API_KEY`, `AGENT_DATABASE_URL`
 (default `sqlite:///./data/agent.db`), `AGENT_MAX_STEPS` (default 4),
-`AGENT_EXEC_TIMEOUT` (default 25), `AGENT_LOG_LEVEL`.
+`AGENT_EXEC_TIMEOUT` (default 25), `AGENT_LOG_LEVEL`, and cost-metering prices
+`AGENT_COST_INPUT_PER_MTOK` (default `0.30`) / `AGENT_COST_OUTPUT_PER_MTOK`
+(default `2.50`) — USD per 1M tokens for `gemini-2.5-flash`.
 
 ### Endpoints
 
@@ -37,10 +47,46 @@ Config (env, prefix `AGENT_`): `AGENT_GEMINI_API_KEY`, `AGENT_DATABASE_URL`
 |--------|------|---------|
 | POST | `/datasets` | Multipart CSV/Excel upload (`file`, optional `session_id`) → stores under `data/uploads/`, **auto-profiles**, returns `{dataset_id, session_id, filename, file_type, size_bytes, profile}` where `profile` is the deterministic profile dict (see below) |
 | POST | `/sessions` | Create a session → `{session_id, title}` |
-| POST | `/sessions/{id}/messages` | Ask `{question, dataset_ids}` (N datasets → multi-file join) → runs the agent with conversation memory, returns `{run_id, status, answer_text, generated_code, step_count, ...}` |
+| POST | `/sessions/{id}/messages` | Ask `{question, dataset_ids}` (N datasets → multi-file join) → runs the agent with conversation memory, returns the **enriched `AskResponse`** (see below) |
+| POST | `/sessions/{id}/messages/stream` | Same as above but streams progress live over **SSE** (`text/event-stream`): `step`, `token`, `clarify`, and a terminal `done` event carrying the full `AskResponse` |
+| GET | `/usage/daily` | Running daily token + cost total over today's runs (server-local date) → `{date, prompt_tokens, completion_tokens, cost_usd}` |
 | GET | `/sessions/{id}` | Session detail → `{session, datasets, messages, runs}`; each dataset carries its real parsed `profile` |
 | GET | `/sessions` | List sessions for the history sidebar → `{sessions:[{id, title, created_at, updated_at, dataset_count, message_count}]}` ordered by `updated_at` desc |
 | GET | `/health` | Health check |
+
+**Enriched `AskResponse`** (returned by `POST /messages` and inside the SSE `done` event):
+
+```json
+{
+  "run_id": "uuid", "status": "completed",
+  "answer_text": "West leads with a total order value of 400…",
+  "generated_code": "import pandas as pd\n…",
+  "step_count": 1,
+  "needs_clarification": null,
+  "charts": [{"type": "bar", "title": "Total order value by region",
+              "x_label": "region", "y_label": "total",
+              "data": [{"x": "West", "y": 400}, {"x": "East", "y": 350}]}],
+  "tables": [{"title": "Totals", "columns": ["region", "total"], "rows": [["West", 400]]}],
+  "key_stats": [{"label": "Top region", "value": "West", "delta": "+50"}],
+  "followups": ["How do units compare across regions?", "What is the trend over time?"],
+  "prompt_tokens": 1234, "completion_tokens": 210, "cost_usd": 0.000895,
+  "error": null
+}
+```
+
+When the clarify entry-gate fires on a vague question, `status` is `"needs_clarification"`,
+`needs_clarification` holds the clarifying question, and no code runs (`generated_code` null,
+`step_count` 0). Chart types are `bar` | `line` | `scatter`; a scalar answer degrades to
+`key_stats` only (empty `charts`).
+
+**SSE event shapes** (`POST /sessions/{id}/messages/stream`, one JSON object per `data:` line):
+
+```
+event: step     data: {"label": "Planning…"}          # also: Generating code…, Running code…, Checking result…, Charting…, Writing answer…
+event: token    data: {"text": "West leads with "}     # answer prose, streamed in chunks
+event: clarify  data: {"question": "Which metric…?"}    # only on the vague-question gate
+event: done     data: { …full AskResponse json… }       # terminal event
+```
 
 **Profile shape** (`profile` field on `POST /datasets` and each `datasets[]` in `GET /sessions/{id}`):
 
