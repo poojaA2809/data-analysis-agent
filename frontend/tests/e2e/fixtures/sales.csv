@@ -1,0 +1,11 @@
+order_id,region,order_value,units
+1001,West,120.50,3
+1002,East,85.00,2
+1003,West,240.00,5
+1004,North,60.25,1
+1005,East,150.75,4
+1006,South,300.00,6
+1007,West,95.00,2
+1008,North,210.40,5
+1009,South,45.00,1
+1010,East,180.00,4

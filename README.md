@@ -1,3 +1,52 @@
+# Data-Analysis Agent — Phase 1 (Ask-one-CSV)
+
+> **Run every command from the repo root.** All Python commands are prefixed with `uv run`.
+
+Upload one CSV, ask a plain-language question, and a LangGraph agent plans, writes pandas,
+runs it locally in a bounded subprocess against your real data, self-corrects on error up to
+a step limit, and returns a plain-language answer plus the exact executed Python. Raw data
+never leaves the machine — only a few sample rows are sent to the LLM.
+
+## Setup & run (Phase 1 backend)
+
+```bash
+cp .env.example .env          # set AGENT_ANTHROPIC_API_KEY=<your real sk-ant-... key>
+uv sync --extra dev
+
+# Build the SQLite schema (sessions, datasets, messages, runs) from scratch:
+uv run alembic upgrade head
+uv run alembic current        # -> 0001 (head)
+
+# Start the API + static frontend at http://localhost:8001
+uv run python -m src
+```
+
+Config (env, prefix `AGENT_`): `AGENT_ANTHROPIC_API_KEY`, `AGENT_DATABASE_URL`
+(default `sqlite:///./data/agent.db`), `AGENT_MAX_STEPS` (default 4),
+`AGENT_EXEC_TIMEOUT` (default 25), `AGENT_LOG_LEVEL`.
+
+### Endpoints
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| POST | `/datasets` | Multipart CSV upload (`file`, optional `session_id`) → stores under `data/uploads/`, returns `{dataset_id, session_id, filename, file_type, size_bytes, profile}` |
+| POST | `/sessions` | Create a session → `{session_id, title}` |
+| POST | `/sessions/{id}/messages` | Ask `{question, dataset_ids}` → runs the agent, returns `{run_id, status, answer_text, generated_code, step_count, ...}` |
+| GET | `/sessions/{id}` | Session detail → `{session, datasets, messages, runs}` |
+| GET | `/health` | Health check |
+
+### Tests
+
+```bash
+uv run pytest tests/unit/ -q         # no key needed (contract, DB, executor, settings)
+uv run pytest -q                     # full suite — integration needs a real AGENT_ANTHROPIC_API_KEY
+```
+
+Integration tests hit the real Anthropic API and a real subprocess pandas executor; they
+skip only if no key is present.
+
+---
+
 # Zero Shot SDD Harness for Building Agents
 
 Give it a one-line idea. Walk away with a working, tested, phased agent.
