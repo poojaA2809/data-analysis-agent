@@ -1,32 +1,44 @@
 # UI
 
-> **Boilerplate status:** Delete this file if the agent has no UI. Otherwise, filled in by the spec-writer sub-agent.
-
 ---
 
 ## UI Type
 
-<!-- FILL IN: Web dashboard / CLI / chat interface / none -->
+Single-page web app (Next.js 15 static export served at `http://localhost:8001/app/`). Chat-style analysis workspace for a single owner.
 
 ## Views / Screens
 
-<!-- FILL IN: One section per major view. -->
+### Screen: Analysis Workspace (single page)
 
-### Screen: <!-- Name -->
-
-**Purpose:** <!-- what the user does here -->
+**Purpose:** Upload data, ask questions, read answers, and inspect exactly what the agent ran.
 
 **Key elements:**
-- <!-- element 1 -->
-- <!-- element 2 -->
+- **File dropzone** (Phase 1 real, CSV only; Phase 2 adds Excel + multi-file picker) — drag/drop or browse; shows uploaded file chips.
+- **Question box** (real) — plain-language input + Ask button.
+- **Answer pane** (real) — the plain-language answer for each turn, in a scrolling conversation.
+- **Collapsible "Code that ran" panel** (real) — expands to show the exact executed Python per answer.
+- **History sidebar** (Phase 1 STUB labelled "Coming soon"; Phase 2 real) — past sessions, click to reload.
+- **Profile card** (Phase 1 STUB; Phase 2 real) — per-dataset columns, types, ranges, quality flags.
+- **Cost/token bar** (Phase 1 STUB; Phase 3 real) — this query's tokens + cost and today's running total.
+- **Live step stream** (Phase 1 STUB; Phase 3 real) — "Planning… / Running code… / Charting…" then streamed answer.
+- **Charts + summary tables + key-stat highlights** (Phase 1 STUB; Phase 3 real) — rendered under the answer.
+- **Follow-up chips** (Phase 1 STUB; Phase 3 real) — 2–3 suggested next questions.
+- **Clarify prompt** (Phase 1 STUB; Phase 3 real) — agent's clarifying question when unsure.
 
 **Actions available:**
-- <!-- action 1 -->
+- Upload a file; ask a question; expand/collapse the code panel.
+- (P2) Select a past session; select multiple datasets for one question.
+- (P3) Click a follow-up chip; answer a clarifying question; view daily cost.
+
+**Stub labelling rule:** every not-yet-real surface is visibly greyed with a "Coming soon" badge so a stub is never mistaken for a bug (see `spec/roadmap.md` phase handoffs).
 
 ## Error States
 
-<!-- FILL IN: How does the UI surface errors and loading states to the user? -->
+- **Upload error** (bad type / >100MB): inline red message on the dropzone.
+- **Run failure**: the answer pane shows a clear error card ("The analysis failed: …") rather than a blank.
+- **Low-confidence answer** (P3): answer is badge-flagged and shows "what it tried".
+- **Loading**: Ask button shows a spinner; Phase 3 replaces it with the live step stream.
 
 ## Tech Stack
 
-<!-- FILL IN: Filled in by spec-writer. E.g., Next.js 15 + React 19 + Tailwind -->
+Next.js 15 + React 19 + TypeScript + Tailwind, static export (`output: "export"`) served by FastAPI at `/app/`. Charts via Plotly/Recharts (Phase 3). E2E via Playwright (`frontend/tests/e2e/`).
