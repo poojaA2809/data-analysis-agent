@@ -20,7 +20,7 @@ Lets the user load multiple files (including Excel) into one session and ask a s
 | System | Operation | On Failure |
 |--------|-----------|------------|
 | Local (pandas + openpyxl) | load each file into the executor namespace | load error surfaced; run marked failed |
-| Anthropic Claude | plan/codegen over multiple schemas | as in analyze_dataset |
+| Google Gemini | plan/codegen over multiple schemas | as in analyze_dataset |
 
 ## Business Rules
 - Excel loaded via openpyxl; each dataset exposed to generated code as `dfs["<filename>"]`.

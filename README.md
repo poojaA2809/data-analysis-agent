@@ -39,11 +39,11 @@ Config (env, prefix `AGENT_`): `AGENT_ANTHROPIC_API_KEY`, `AGENT_DATABASE_URL`
 
 ```bash
 uv run pytest tests/unit/ -q         # no key needed (contract, DB, executor, settings)
-uv run pytest -q                     # full suite — integration needs a real AGENT_ANTHROPIC_API_KEY
+uv run pytest -q                     # full suite — integration needs a real AGENT_GEMINI_API_KEY
 ```
 
-Integration tests hit the real Anthropic API and a real subprocess pandas executor; they
-skip only if no key is present.
+Integration tests hit the real Google Gemini API (model `gemini-2.5-flash`) and a real
+subprocess pandas executor; they skip only if no key is present.
 
 ---
 

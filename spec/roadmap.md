@@ -39,7 +39,7 @@ Ad-hoc data questions today mean writing throwaway pandas notebooks by hand — 
 - **Locality:** raw data stays on disk, code runs locally; only a few sample rows may go to the LLM.
 - **Cost:** minimize LLM calls; tier models (cheap model for profiling/suggestions, stronger for code). Show cost to the user.
 - **Iteration bound:** the code→run→observe→fix loop is capped by `AGENT_MAX_STEPS` (default 4).
-- **Stack:** Python + FastAPI + LangGraph + SQLite + Anthropic Claude, extending the repo skeleton in place. Env prefix `AGENT_`, key `AGENT_ANTHROPIC_API_KEY`.
+- **Stack:** Python + FastAPI + LangGraph + SQLite + Google Gemini (google-genai SDK), extending the repo skeleton in place. Env prefix `AGENT_`, key `AGENT_GEMINI_API_KEY`.
 
 ## Phases of Development
 
@@ -60,7 +60,7 @@ Ad-hoc data questions today mean writing throwaway pandas notebooks by hand — 
   - `api-routes`: `src/api/datasets.py`, `src/api/sessions.py`, `src/domain/*.py`, `src/storage/files.py`.
   - `frontend`: `frontend/src/app/page.tsx`, `frontend/src/app/components/*`.
   - `e2e`: `frontend/tests/e2e/analyze.spec.ts`.
-- **Gate command:** `uv run alembic upgrade head` then `uv run pytest` (real Anthropic key from `.env`; SQLite is the production DB here). Frontend: `pnpm --dir frontend exec playwright test`.
+- **Gate command:** `uv run alembic upgrade head` then `uv run pytest` (real Gemini key from `.env`; SQLite is the production DB here). Frontend: `pnpm --dir frontend exec playwright test`.
 - **How the user tests it (handoff seed):** Run `uv run uvicorn api.main:app --port 8001` (backend) and build/serve the static frontend at `http://localhost:8001/app/`. Open the app, drag a CSV (e.g. a sales export) into the dropzone, type "What is the average order value by region?", press Ask. Expect: within ~30s a plain-language answer appears; click "Code that ran" to expand the exact pandas the agent executed. Real: CSV upload, the answer, the code panel. Labelled stubs (greyed, "Coming soon"): charts, cost/token bar, live step stream, follow-up chips, multi-file/Excel, session history sidebar.
 
 ### Phase 2 — Persist, profile, and combine

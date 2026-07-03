@@ -19,7 +19,7 @@ Enriches an answer with an interactive chart, a summary table, and highlighted k
 ## External Calls
 | System | Operation | On Failure |
 |--------|-----------|------------|
-| Anthropic Claude | choose chart type + which stats to highlight from the result | degrade to plain answer + table only |
+| Google Gemini | choose chart type + which stats to highlight from the result | degrade to plain answer + table only |
 
 ## Business Rules
 - Charts/tables are built from the already-computed local result — no extra data goes to the LLM beyond the (capped) result summary.

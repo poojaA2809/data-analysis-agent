@@ -61,4 +61,4 @@ Skeleton health check (unchanged).
 
 ## Authentication
 
-None — single-owner local app bound to localhost. No tokens or accounts. The Anthropic key is read server-side from `.env`.
+None — single-owner local app bound to localhost. No tokens or accounts. The Gemini key is read server-side from `.env`.

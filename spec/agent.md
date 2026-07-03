@@ -12,7 +12,7 @@ Patterns from `harness/patterns/agentic-ai.md` in use:
 - **#4 Reflection** — `observe` critiques the execution result and routes a fix back to `generate_code`.
 - **#12 Exception Handling & Recovery** — errors from execution feed the reflection loop; fatal errors route to `handle_error`.
 - **#8 Memory Management** — conversation history + prior runs loaded from SQLite (Phase 2).
-- **#16 Resource-Aware Optimization** — model tiering (Haiku for profiling/follow-ups, Sonnet for codegen) + sample-rows-only prompts.
+- **#16 Resource-Aware Optimization** — sample-rows-only prompts (a single Gemini model for all nodes in Phase 1; cheaper-model tiering is a future option).
 - **#13 Human-in-the-Loop** (Phase 3) — `clarify` pauses for a clarifying question on low confidence.
 - **#19 Evaluation & Monitoring** — structured per-run logging + token/cost metering (Phase 3).
 
@@ -22,14 +22,16 @@ Patterns from `harness/patterns/agentic-ai.md` in use:
 
 | Agent / Node | Provider | Model ID | Rationale |
 |-------------|----------|----------|-----------|
-| plan | Anthropic | claude-sonnet-4-6 | Reasoning quality on how to answer the question. |
-| generate_code | Anthropic | claude-sonnet-4-6 | Correct pandas is the crux; quality over latency. |
-| observe / critique | Anthropic | claude-sonnet-4-6 | Judge result plausibility + propose a fix. |
-| finalize (answer) | Anthropic | claude-sonnet-4-6 | Clear, act-on-able prose from the result. |
-| profile summary (P2) | Anthropic | claude-haiku-4-5-20251001 | Cheap narration of deterministic profile stats. |
-| suggest_followups (P3) | Anthropic | claude-haiku-4-5-20251001 | Short, cheap suggestions. |
+| plan | Google Gemini | gemini-2.5-flash | Reasoning quality on how to answer the question. |
+| generate_code | Google Gemini | gemini-2.5-flash | Correct pandas is the crux; quality over latency. |
+| observe / critique | Google Gemini | gemini-2.5-flash | Judge result plausibility + propose a fix. |
+| finalize (answer) | Google Gemini | gemini-2.5-flash | Clear, act-on-able prose from the result. |
+| profile summary (P2) | Google Gemini | gemini-2.5-flash | Narration of deterministic profile stats. |
+| suggest_followups (P3) | Google Gemini | gemini-2.5-flash | Short follow-up suggestions. |
 
-**Fallback behaviour:** `LLMClient` retries with exponential backoff on transient/rate-limit errors; on persistent failure the node sets `state["error"]` → `handle_error`, run status `failed`, error surfaced. Tests call the real API with `AGENT_ANTHROPIC_API_KEY` from `.env`.
+A single Gemini model (`gemini-2.5-flash`) serves all nodes in Phase 1; cheaper-model tiering per node is a future option.
+
+**Fallback behaviour:** `LLMClient` retries with exponential backoff on transient/rate-limit errors; on persistent failure the node sets `state["error"]` → `handle_error`, run status `failed`, error surfaced. Tests call the real API with `AGENT_GEMINI_API_KEY` from `.env`.
 
 **Prompt strategy:** system prompt per node loaded from `src/prompts/*.md`. Prompts include the dataset **schema + a few sample rows only** (never full data) and, for retries, the prior code + error/critique. Code generation asks for a single Python snippet that assigns a `result` variable. Structured fields (plan steps, critique verdict) requested as compact JSON.
 
@@ -99,10 +101,10 @@ class AgentState(TypedDict, total=False):
 Phase-1 REAL nodes: `plan`, `generate_code`, `execute_code`, `observe`, `finalize`, `handle_error`. Phase-2: `profile` (upload path). Phase-3: `suggest_followups`, `clarify`, and rich-output enrichment inside `finalize`.
 
 ### `plan`
-**Reads:** `question`, `dataset_schemas`, `messages`. **Writes:** `plan`. **LLM:** yes (Sonnet). Produces a short numbered approach for answering the question given the schema + sample rows.
+**Reads:** `question`, `dataset_schemas`, `messages`. **Writes:** `plan`. **LLM:** yes (Gemini). Produces a short numbered approach for answering the question given the schema + sample rows.
 
 ### `generate_code`
-**Reads:** `question`, `plan`, `dataset_schemas`, `generated_code`+`execution_error`+`critique` (on retry). **Writes:** `generated_code`, increments `step_count`. **LLM:** yes (Sonnet). Emits one pandas snippet assigning `result`.
+**Reads:** `question`, `plan`, `dataset_schemas`, `generated_code`+`execution_error`+`critique` (on retry). **Writes:** `generated_code`, increments `step_count`. **LLM:** yes (Gemini). Emits one pandas snippet assigning `result`.
 
 ### `execute_code`
 **Reads:** `generated_code`, `dataset_paths`. **Writes:** `execution_stdout`, `execution_result`, `execution_error`. **LLM:** no. Calls `execute_python` (bounded subprocess).
@@ -111,16 +113,16 @@ Phase-1 REAL nodes: `plan`, `generate_code`, `execute_code`, `observe`, `finaliz
 | Local subprocess | run generated pandas | capture error/timeout into `execution_error` (partial — loop handles) |
 
 ### `observe`
-**Reads:** `execution_result`, `execution_error`, `execution_stdout`, `question`. **Writes:** `critique`. **LLM:** yes (Sonnet). Verdict: *ok* → finalize, or *needs-fix* → generate_code (if under step budget).
+**Reads:** `execution_result`, `execution_error`, `execution_stdout`, `question`. **Writes:** `critique`. **LLM:** yes (Gemini). Verdict: *ok* → finalize, or *needs-fix* → generate_code (if under step budget).
 
 ### `finalize`
-**Reads:** `question`, `execution_result`, `execution_stdout`, `generated_code`. **Writes:** `answer_text`, `status="completed"` (P3: `charts`, `tables`, `key_stats`, `followups`). **LLM:** yes (Sonnet answer; Haiku follow-ups). On step-budget exhaustion, writes a best-effort answer flagged low-confidence with what it tried.
+**Reads:** `question`, `execution_result`, `execution_stdout`, `generated_code`. **Writes:** `answer_text`, `status="completed"` (P3: `charts`, `tables`, `key_stats`, `followups`). **LLM:** yes (Gemini answer + follow-ups). On step-budget exhaustion, writes a best-effort answer flagged low-confidence with what it tried.
 
 ### `handle_error`
 **Reads:** `error`, `run_id`. **Writes:** `status="failed"`. Updates run row error + timestamp; terminates.
 
 ### `profile` (Phase 2)
-**Reads:** `dataset_paths`. **Writes:** `profile`. **LLM:** Haiku (narrates deterministic stats from `profile_dataframe`). Runs on the upload path, not the ask path.
+**Reads:** `dataset_paths`. **Writes:** `profile`. **LLM:** Gemini (narrates deterministic stats from `profile_dataframe`). Runs on the upload path, not the ask path.
 
 ### `clarify` (Phase 3)
 **Reads:** `question`, `dataset_schemas`. **Writes:** `needs_clarification`. Entry-gate before `plan`: if the question is too ambiguous to answer, emit a clarifying question and END without running code.

@@ -1,7 +1,7 @@
 """Real end-to-end integration — requires a real LLM key (from .env).
 
-These exercise the full analyze_dataset capability against the real Anthropic API
-and a real subprocess pandas executor. They skip ONLY if no key is present.
+These exercise the full analyze_dataset capability against the real Google Gemini
+API and a real subprocess pandas executor. They skip ONLY if no key is present.
 """
 import json
 from pathlib import Path

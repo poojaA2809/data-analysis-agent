@@ -6,14 +6,14 @@ import { join } from 'node:path'
 // ASSUMPTION: the backend (`uv run python -m src`) is already running with the
 // frontend built into `frontend/out/`, so the static export is served at
 // http://localhost:8001/app/ and the API is same-origin. The qa-auditor starts
-// the server before running this; the config does not launch it. Real Anthropic
-// key from `.env` — this asserts on REAL answer + code content, not just a 200.
+// the server before running this; the config does not launch it. Real Google
+// Gemini key from `.env` — this asserts on REAL answer + code content, not just a 200.
 
 // Playwright runs specs in a CommonJS context, so `__dirname` is available.
 const CSV_FIXTURE = join(__dirname, 'fixtures', 'sales.csv')
 
 test('upload a CSV, ask a question, and see a real answer + the exact code', async ({ page }) => {
-  await page.goto('/')
+  await page.goto('/app/')
 
   // Page loads and is styled (the primary heading is visible).
   await expect(page.getByRole('heading', { name: 'Data Analysis Agent' })).toBeVisible()

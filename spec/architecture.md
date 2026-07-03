@@ -4,14 +4,14 @@
 
 ## System Overview
 
-A single-origin local web app. A FastAPI process serves both the REST API and the statically-exported frontend at `http://localhost:8001/app/`. The owner uploads files (stored on local disk), then asks questions in a session. Each question triggers a LangGraph agent run that plans, generates Python, executes it locally against the uploaded dataframe(s) in a bounded subprocess, observes the result, and iterates until the answer holds or the step limit is hit. Sessions, datasets, messages, and runs persist in a local SQLite database. Only tiny row samples are ever sent to Anthropic; raw data and code execution stay on the machine.
+A single-origin local web app. A FastAPI process serves both the REST API and the statically-exported frontend at `http://localhost:8001/app/`. The owner uploads files (stored on local disk), then asks questions in a session. Each question triggers a LangGraph agent run that plans, generates Python, executes it locally against the uploaded dataframe(s) in a bounded subprocess, observes the result, and iterates until the answer holds or the step limit is hit. Sessions, datasets, messages, and runs persist in a local SQLite database. Only tiny row samples are ever sent to Google Gemini; raw data and code execution stay on the machine.
 
 ## Component Map
 
 ```
 Browser (static Next.js export @ /app/)
     ↓  REST + (Phase 3) SSE
-FastAPI (:8001)  ──►  Anthropic Claude API (planning / codegen / critique — sample rows only)
+FastAPI (:8001)  ──►  Google Gemini API (planning / codegen / critique — sample rows only)
     ↓
 LangGraph agent (plan → generate_code → execute_code → observe → [retry] → finalize)
     ↓                         ↓
@@ -28,7 +28,7 @@ Local file storage (data/uploads/<dataset_id>.<ext>)
 | API (`src/api/`) | HTTP surface: upload, sessions, ask, history, (P3) usage + SSE. Serves `/app/` static export. |
 | Agent (`src/graph/`) | LangGraph state machine: plan → codegen → execute → observe → iterate → finalize. |
 | Analysis (`src/analysis/`) | Local subprocess Python executor, profiler, (P3) render/keystat extraction. |
-| LLM (`src/llm/`) | `LLMClient` wrapper over Anthropic (skeleton), model tiering, token/cost capture. |
+| LLM (`src/llm/`) | `LLMClient` wrapper over Google Gemini (skeleton `GeminiProvider`), token/cost capture. |
 | Storage (`src/storage/`, `src/db/`) | Local file storage + SQLAlchemy models / SQLite session. |
 | Observability (`src/observability/`) | Structured per-run logging, event stream, (P3) cost metering. |
 
@@ -69,7 +69,7 @@ The Next.js frontend is built with `output: "export"` to static HTML/JS and serv
 
 | Dependency | Purpose | Failure Mode |
 |------------|---------|--------------|
-| Anthropic Claude API | Planning, code generation, critique, answer, (P2) profile summary, (P3) follow-ups | Retry w/ backoff in `LLMClient`; on persistent failure the run status → `failed` with a surfaced error. |
+| Google Gemini API | Planning, code generation, critique, answer, (P2) profile summary, (P3) follow-ups | Retry w/ backoff in `LLMClient`; on persistent failure the run status → `failed` with a surfaced error. |
 | Local filesystem | Upload storage + executor working dir | Upload/read errors set the run/dataset error and surface to the user. |
 | SQLite (local file) | Persistence of all entities | Startup fails fast if the DB is unwritable. |
 
@@ -77,7 +77,7 @@ The Next.js frontend is built with `output: "export"` to static HTML/JS and serv
 
 - **Language:** Python 3.12 (backend) + TypeScript (frontend).
 - **Agent framework:** LangGraph (extends the repo skeleton).
-- **LLM provider + model:** Anthropic Claude. Default `claude-sonnet-4-6` for plan/codegen/critique/answer; `claude-haiku-4-5-20251001` for profiling summary and follow-up suggestions. Env-configurable via `AGENT_LLM_MODEL` (default) plus per-node override constants.
+- **LLM provider + model:** Google Gemini (google-genai SDK). Default `gemini-2.5-flash` for all nodes (plan/codegen/critique/answer/profiling summary/follow-ups). Env-configurable via `AGENT_LLM_MODEL` (default) plus per-node override constants; API key `AGENT_GEMINI_API_KEY`. The provider-agnostic `LLMClient` wrapper (skeleton `GeminiProvider`) keeps the abstraction. Cheaper-model tiering per node is a future option; the Phase 1 default is a single Gemini model everywhere.
 - **Backend:** FastAPI (serves API + static `/app/`).
 - **Database + ORM:** SQLite + SQLAlchemy 2.0 (Mapped/DeclarativeBase, per skeleton); Alembic for migrations.
 - **Frontend:** Next.js 15 + React 19 (static export) + Tailwind.
@@ -86,7 +86,7 @@ The Next.js frontend is built with `output: "export"` to static HTML/JS and serv
 | Key library | Version | Purpose |
 |-------------|---------|---------|
 | langgraph | ^0.2 | Agent state graph |
-| anthropic | latest | LLM calls via `LLMClient` |
+| google-genai | latest | LLM calls via `LLMClient` |
 | pandas | ^2.2 | Dataframe analysis in the executor |
 | openpyxl | ^3.1 | Excel loading (Phase 2) |
 | sqlalchemy | ^2.0 | ORM |

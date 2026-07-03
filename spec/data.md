@@ -80,4 +80,4 @@ One agent execution answering one question (full audit trail).
 
 ## Sensitive Data
 
-The uploaded data may contain PII but stays entirely local — never sent to the LLM in full (only capped sample rows). The Anthropic API key lives in `.env` (`AGENT_ANTHROPIC_API_KEY`), never in the DB or client. No auth/secrets stored (single-owner local app).
+The uploaded data may contain PII but stays entirely local — never sent to the LLM in full (only capped sample rows). The Gemini API key lives in `.env` (`AGENT_GEMINI_API_KEY`), never in the DB or client. No auth/secrets stored (single-owner local app).

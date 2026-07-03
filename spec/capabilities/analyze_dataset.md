@@ -20,7 +20,7 @@ Takes a plain-language question about an uploaded dataset, writes and runs Pytho
 ## External Calls
 | System | Operation | On Failure |
 |--------|-----------|------------|
-| Anthropic Claude | plan / codegen / critique / answer (sample rows only) | retry w/ backoff; persistent → run `failed` |
+| Google Gemini | plan / codegen / critique / answer (sample rows only) | retry w/ backoff; persistent → run `failed` |
 | Local Python executor | run generated pandas in bounded subprocess | error routes to `observe` → retry within step budget |
 
 ## Business Rules

@@ -19,8 +19,8 @@ After each answer, suggests 2–3 smart follow-up questions; and when the agent 
 ## External Calls
 | System | Operation | On Failure |
 |--------|-----------|------------|
-| Anthropic (Haiku) | generate follow-ups | omit chips; answer still shown |
-| Anthropic (Sonnet) | assess ambiguity → clarifying question | proceed with best-guess flagged low-confidence |
+| Google Gemini | generate follow-ups | omit chips; answer still shown |
+| Google Gemini | assess ambiguity → clarifying question | proceed with best-guess flagged low-confidence |
 
 ## Business Rules
 - `clarify` runs as an entry gate: if the question is too ambiguous, END with a clarifying question and do not run code.

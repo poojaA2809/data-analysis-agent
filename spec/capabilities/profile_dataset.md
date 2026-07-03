@@ -17,7 +17,7 @@ On each new upload, computes a profile — columns, inferred types, value ranges
 | System | Operation | On Failure |
 |--------|-----------|------------|
 | Local (pandas) | compute deterministic profile | profile omitted, upload still succeeds (partial) |
-| Anthropic (Haiku) | narrate the profile in one short paragraph | narration omitted; raw stats still shown |
+| Google Gemini | narrate the profile in one short paragraph | narration omitted; raw stats still shown |
 
 ## Business Rules
 - Profiling is deterministic (pandas) for the stats; the LLM only narrates — no data values beyond sample rows go to the LLM.
