@@ -9,7 +9,12 @@ from pathlib import Path
 
 from analysis.executor import execute_python
 from analysis.profiler import profile_dataframe
-from analysis.render import parse_finalize
+from analysis.render import (
+    build_data_grid,
+    clean_insights,
+    parse_dashboard,
+    parse_finalize,
+)
 from config.settings import get_settings
 from graph.state import AgentState
 from llm.client import LLMClient
@@ -120,6 +125,15 @@ def _parse_clarify(text: str) -> tuple[bool, str | None]:
 
 def plan(state: AgentState) -> AgentState:
     try:
+        if state.get("dashboard_mode"):
+            prompt = (
+                "Objective: design an automatic overview dashboard for this "
+                "dataset (no user question).\n\n"
+                f"{_schema_block(state.get('dataset_schemas', []))}"
+            )
+            res = LLMClient().call_model_metered(prompt, system=_prompt("dashboard_plan"))
+            _log.info("node.plan", run_id=state.get("run_id"), mode="dashboard", plan_len=len(res[0]))
+            return {**state, **_metered(state, res), "plan": res[0]}
         prompt = (
             f"{_history_block(state.get('messages'))}"
             f"Question: {state['question']}\n\n"
@@ -134,12 +148,21 @@ def plan(state: AgentState) -> AgentState:
 
 def generate_code(state: AgentState) -> AgentState:
     try:
-        prompt = (
-            f"{_history_block(state.get('messages'))}"
-            f"Question: {state['question']}\n\n"
-            f"Plan:\n{state.get('plan', '')}\n\n"
-            f"{_schema_block(state.get('dataset_schemas', []))}"
-        )
+        dash = bool(state.get("dashboard_mode"))
+        if dash:
+            prompt = (
+                "Objective: build the dashboard (charts + summary_table) for this "
+                "dataset.\n\n"
+                f"Plan:\n{state.get('plan', '')}\n\n"
+                f"{_schema_block(state.get('dataset_schemas', []))}"
+            )
+        else:
+            prompt = (
+                f"{_history_block(state.get('messages'))}"
+                f"Question: {state['question']}\n\n"
+                f"Plan:\n{state.get('plan', '')}\n\n"
+                f"{_schema_block(state.get('dataset_schemas', []))}"
+            )
         if state.get("execution_error") or state.get("critique"):
             prompt += (
                 f"\n\nPrevious code:\n{state.get('generated_code', '')}\n"
@@ -147,7 +170,8 @@ def generate_code(state: AgentState) -> AgentState:
                 f"Critique: {state.get('critique')}\n"
                 "Fix the problem and produce corrected code."
             )
-        res = LLMClient().call_model_metered(prompt, system=_prompt("generate_code"))
+        system = _prompt("dashboard_code") if dash else _prompt("generate_code")
+        res = LLMClient().call_model_metered(prompt, system=system)
         code = _strip_code_fences(res[0])
         step = state.get("step_count", 0) + 1
         _log.info("node.generate_code", run_id=state.get("run_id"), step=step)
@@ -260,6 +284,121 @@ def finalize(state: AgentState) -> AgentState:
         }
     except Exception as exc:  # noqa: BLE001
         return {**state, "error": f"finalize failed: {exc}"}
+
+
+def _parse_insights(text: str) -> list:
+    """Extract a list of insight strings from the insights LLM output."""
+    obj = None
+    m = re.search(r"\{.*\}", text or "", re.DOTALL)
+    if m:
+        try:
+            obj = json.loads(m.group(0))
+        except json.JSONDecodeError:
+            obj = None
+    if isinstance(obj, dict):
+        return clean_insights(obj.get("insights"))
+    return []
+
+
+def _derive_insights(result_obj: dict) -> list:
+    """Deterministic fallback insights from the computed summary table — used
+    when the insights LLM fails or returns too few. References real numbers."""
+    out: list[str] = []
+    table = result_obj.get("summary_table") or {}
+    cols = table.get("columns") or []
+    rows = table.get("rows") or []
+    if cols and rows:
+        title = table.get("title") or "summary"
+        out.append(f"The {title} groups the data into {len(rows)} rows across "
+                   f"columns {', '.join(str(c) for c in cols[:4])}.")
+        first = rows[0]
+        if isinstance(first, list) and len(first) >= 2:
+            out.append(f"Top group '{first[0]}' shows {cols[1]} = {first[1]}.")
+    charts = result_obj.get("charts") or []
+    if charts:
+        types = sorted({c.get("type") for c in charts if isinstance(c, dict)})
+        out.append(f"The dashboard renders {len(charts)} charts "
+                   f"({', '.join(str(t) for t in types)}).")
+    return clean_insights(out)
+
+
+def _dashboard_insights(state: AgentState, result_obj: dict) -> tuple[list, dict]:
+    """Call Gemini for 2–5 grounded insights; on failure or shortfall, top up
+    with deterministic derived insights. Returns (insights, token_delta)."""
+    try:
+        content = json.dumps(
+            {
+                "charts": result_obj.get("charts", []),
+                "summary_table": result_obj.get("summary_table", {}),
+            },
+            default=str,
+        )[:8000]
+        res = LLMClient().call_model_metered(content, system=_prompt("dashboard_insights"))
+        delta = _metered(state, res)
+        insights = _parse_insights(res[0])
+    except Exception as exc:  # noqa: BLE001 — insights are best-effort
+        _log.info("dashboard.insights_fallback", run_id=state.get("run_id"), error=str(exc))
+        insights, delta = [], {}
+
+    if len(insights) < 2:
+        for extra in _derive_insights(result_obj):
+            if extra not in insights:
+                insights.append(extra)
+            if len(insights) >= 5:
+                break
+    return insights[:5], delta
+
+
+def dashboard_finalize(state: AgentState) -> AgentState:
+    """Assemble the DashboardPayload from local execution results + a Gemini
+    insights call + a deterministic capped data grid. Never crashes the run."""
+    try:
+        raw = state.get("execution_result") or "{}"
+        try:
+            result_obj = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            result_obj = {}
+        if not isinstance(result_obj, dict):
+            result_obj = {}
+
+        paths = state.get("dataset_paths", [])
+        cap = get_settings().grid_row_cap
+        data_grid = (
+            build_data_grid(paths[0], cap)
+            if paths
+            else {"columns": [], "rows": [], "total_rows": 0}
+        )
+
+        insights, delta = _dashboard_insights(state, result_obj)
+
+        payload = parse_dashboard(
+            result_obj,
+            dataset_id=state.get("dataset_id", ""),
+            title=state.get("dashboard_title", ""),
+            insights=insights,
+            data_grid=data_grid,
+            status="completed",
+        )
+        _log.info(
+            "node.dashboard_finalize",
+            run_id=state.get("run_id"),
+            charts=len(payload["charts"]),
+            insights=len(payload["insights"]),
+            grid_rows=len(payload["data_grid"]["rows"]),
+            total_rows=payload["data_grid"]["total_rows"],
+        )
+        answer = "; ".join(payload["insights"]) or "Dashboard generated."
+        return {
+            **state,
+            **delta,
+            "dashboard": payload,
+            "answer_text": answer,
+            "charts": payload["charts"],
+            "tables": [payload["summary_table"]] if payload["summary_table"]["columns"] else [],
+            "status": "completed",
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {**state, "error": f"dashboard_finalize failed: {exc}"}
 
 
 def handle_error(state: AgentState) -> AgentState:

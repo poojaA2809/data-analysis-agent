@@ -263,3 +263,25 @@ agentic_ai = graph.compile()
 ```
 
 `route_after_observe` (in `src/graph/edges.py`): returns `finalize` if verdict ok or `step_count >= MAX_STEPS`, else `generate_code`.
+
+---
+
+## Auto-Dashboard Flow (Phase A)
+
+The Auto-Dashboard (`POST /datasets/{id}/dashboard`, capability [`auto_dashboard`](capabilities/auto_dashboard.md)) REUSES the existing graph, not a new agent. It is a distinct entry that runs the SAME `plan → generate_code → execute_code → observe → [retry]` loop with a **dashboard objective** instead of a user question, then a **dashboard-finalize** in place of the ask `finalize`.
+
+- **Entry / objective:** the dashboard run seeds state without a `question`; instead `plan` reads `dataset_schemas` + `profile` and produces a plan for *which columns/relationships to chart* (categorical→bar/pie, temporal→line, numeric-vs-numeric→scatter), *which grouped aggregation* to compute for the summary table, and the capped data-grid sample. `generate_code` emits one pandas snippet whose `result` is a structured dict `{charts_data, summary_table, data_grid, total_rows}`; `execute_code`/`observe` are unchanged (same retry loop, `AGENT_MAX_STEPS`).
+- **dashboard-finalize** (`src/graph/nodes.py`, extends the render layer): assembles the `DashboardPayload` from the local execution result via `render.py` (now supporting `type: "pie"`), and makes ONE Gemini call to write the 2–5 `insights` grounded in the aggregation result (numbers only from the result — no full data). Writes `dashboard` to state; `status="completed"`.
+- **New state fields** (added to `AgentState`, `total=False`): `dashboard: dict` (the `DashboardPayload`); the `question` field is optional on this path.
+- **Reuse:** local subprocess executor, profiler (`profile`), `observe` retry loop, `handle_error`, and the Phase-3 render shapes are all reused unchanged except the additive `pie` chart type. No new external system — Gemini `gemini-2.5-flash` via `AGENT_GEMINI_API_KEY`.
+
+**Topology (dashboard entry, reuses the same nodes):**
+```
+POST /datasets/{id}/dashboard
+  ▼
+plan(dashboard objective) ─(error)─► handle_error ─► END
+  ▼
+generate_code ─► execute_code ─► observe ──(ok)──► dashboard_finalize ─► END
+                                    └─(needs-fix & steps<MAX)─► generate_code (loop)
+```
+`dashboard_finalize` is a thin variant of `finalize` selected by the run type; the ask path is untouched.

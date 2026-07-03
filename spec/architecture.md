@@ -40,6 +40,7 @@ Local file storage (data/uploads/<dataset_id>.<ext>)
 4. Agent **observes**: on error or an implausible result it revises the code and retries, up to `AGENT_MAX_STEPS`.
 5. **finalize:** compose a plain-language answer and, in Phase 3 (now REAL), a render step derives `charts`/`tables`/`key_stats` from the local execution result and `suggest_followups` proposes 2–3 next questions; token usage from every Gemini call in the run is summed into `prompt_tokens`/`completion_tokens`/`cost_usd`. Persist the `runs` row (question, plan, code, stdout, result, answer, tokens, cost, timestamps) and the assistant message. (Phase 3 also adds a `clarify` entry-gate that can END early with a clarifying question before any code runs.)
 6. **Output:** answer + collapsible executed code returned to the browser; Phase 3 (now REAL) streams steps + answer tokens live via the single-request SSE POST and renders interactive charts/tables/key-stats plus per-run + daily cost.
+7. **(Phase A) Auto-Dashboard trigger:** after an upload, `POST /datasets/{id}/dashboard` runs the reused agent loop with a dashboard objective and returns a `DashboardPayload` (charts + summary table + insights + capped data grid) — no user question. See the Auto-Dashboard section below.
 
 ## Local Python Execution (sandbox model)
 
@@ -60,6 +61,10 @@ See `spec/data.md` for full fields. Tables: `sessions`, `datasets` (FK session, 
 ## Streaming (Phase 3)
 
 `POST /sessions/{id}/messages/stream` is a **single-request Server-Sent Events** endpoint (sse-starlette): the ask and the live stream are the same request. The agent emits typed events through `src/observability/events.py` — `step` (`{label: "Planning…"|"Generating code…"|"Running code…"|"Checking result…"|"Charting…"|"Writing answer…"}`), `token` (streamed answer chunks from `finalize`), `clarify` (`{question}`, emitted when the clarify gate triggers, then the stream ends), and `done` (the full enriched `AskResponse`). The synchronous `POST /sessions/{id}/messages` returns the same enriched payload and is used by tests and as a fallback. This POST-stream mechanism is the **chosen design** over a background-run + `GET`-stream (single request, simpler, works with `fetch` + `ReadableStream`). The frontend consumes the stream via `fetch` + `ReadableStream`.
+
+## Auto-Dashboard (Phase A)
+
+`POST /datasets/{id}/dashboard` triggers a FULLY AUTOMATIC dashboard build for ONE dataset — no user question. It reuses the existing agent loop (plan→generate_code→execute_code→observe) with a dashboard objective (which columns/relationships to chart, which aggregations to compute), then a **dashboard-finalize** that assembles the `DashboardPayload` (charts + summary table + 2–5 insights + capped data grid). Charts/summary-table/data-grid are derived from LOCAL execution results via the extended render layer (`src/analysis/render.py` gains a `pie` chart type and dashboard assembly helpers); only plan/codegen and the insights step call Gemini. The data grid is a capped SAMPLE (`AGENT_GRID_ROW_CAP`) while aggregations run over the FULL dataframe and `total_rows` reports the real count. Shapes reconcile with the Phase-3 chart/table specs so the frontend reuses its recharts/table renderers. Trigger is a dataset id (upload path), not the ask path. See [`spec/capabilities/auto_dashboard.md`](capabilities/auto_dashboard.md) and [`spec/agent.md`](agent.md). Phase B adds export/share (image/PDF/shareable file) of the finished dashboard.
 
 ## Single-origin Frontend
 
@@ -93,7 +98,7 @@ The Next.js frontend is built with `output: "export"` to static HTML/JS and serv
 | alembic | ^1.13 | DB migrations |
 | fastapi / uvicorn | latest | API + static serving |
 | sse-starlette | ^2 | Single-request SSE streaming (Phase 3) |
-| recharts (frontend) | ^2 | Interactive charts/tables rendering (Phase 3) |
+| recharts (frontend) | ^2 | Interactive charts/tables rendering (Phase 3; +pie in Phase A) |
 | @playwright/test | latest | Frontend E2E |
 
 **Avoid:** heavyweight sandboxing services or remote code runners (local-first, single user); Docker-in-the-loop for execution; sending full datasets to the LLM (sample rows only); PostgreSQL/other DBs (SQLite is the chosen production DB here).

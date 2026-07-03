@@ -4,9 +4,12 @@ import {
   Bar,
   BarChart,
   CartesianGrid,
+  Cell,
   Legend,
   Line,
   LineChart,
+  Pie,
+  PieChart,
   ResponsiveContainer,
   Scatter,
   ScatterChart,
@@ -62,7 +65,7 @@ function buildSeries(data: ChartPoint[]): {
   return { rows: Array.from(byX.values()), seriesKeys, grouped: true }
 }
 
-function ChartCard({ spec }: { spec: ChartSpec }) {
+export function ChartCard({ spec }: { spec: ChartSpec }) {
   const data = Array.isArray(spec.data) ? spec.data.filter((p) => p && typeof p === 'object') : []
   if (data.length === 0) return null
 
@@ -107,6 +110,34 @@ function ChartCard({ spec }: { spec: ChartSpec }) {
           <Scatter key={k} name={k} data={rows.map((r) => ({ x: r.x, y: r[k] }))} fill={SERIES_COLORS[i % SERIES_COLORS.length]} />
         ))}
       </ScatterChart>
+    )
+  } else if (type === 'pie') {
+    // Map data points to slices: x = slice name, y = numeric value. Ignore any
+    // `series` grouping for pies (a pie is single-dimension part-of-whole).
+    const slices = data
+      .map((p) => ({
+        name: String(p.x ?? ''),
+        value: isNum(p.y) ? p.y : Number(p.y),
+      }))
+      .filter((s) => Number.isFinite(s.value))
+    chart = (
+      <PieChart margin={{ top: 8, right: 8, bottom: 8, left: 8 }}>
+        <Tooltip />
+        <Legend wrapperStyle={{ fontSize: 11 }} />
+        <Pie
+          data={slices}
+          dataKey="value"
+          nameKey="name"
+          cx="50%"
+          cy="50%"
+          outerRadius="70%"
+          label={{ fontSize: 11 }}
+        >
+          {slices.map((_, i) => (
+            <Cell key={i} fill={SERIES_COLORS[i % SERIES_COLORS.length]} />
+          ))}
+        </Pie>
+      </PieChart>
     )
   } else {
     chart = (
@@ -166,7 +197,7 @@ function StatCard({ stat }: { stat: KeyStat }) {
   )
 }
 
-function TableCard({ table }: { table: TableSpec }) {
+export function TableCard({ table }: { table: TableSpec }) {
   const columns = Array.isArray(table.columns) ? table.columns : []
   const rows = Array.isArray(table.rows) ? table.rows : []
   if (columns.length === 0 && rows.length === 0) return null

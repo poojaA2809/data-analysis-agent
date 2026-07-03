@@ -37,7 +37,8 @@ uv run python -m src
 
 Config (env, prefix `AGENT_`): `AGENT_GEMINI_API_KEY`, `AGENT_DATABASE_URL`
 (default `sqlite:///./data/agent.db`), `AGENT_MAX_STEPS` (default 4),
-`AGENT_EXEC_TIMEOUT` (default 25), `AGENT_LOG_LEVEL`, and cost-metering prices
+`AGENT_EXEC_TIMEOUT` (default 25), `AGENT_GRID_ROW_CAP` (default 200 — the
+auto-dashboard data-grid sample cap), `AGENT_LOG_LEVEL`, and cost-metering prices
 `AGENT_COST_INPUT_PER_MTOK` (default `0.30`) / `AGENT_COST_OUTPUT_PER_MTOK`
 (default `2.50`) — USD per 1M tokens for `gemini-2.5-flash`.
 
@@ -49,6 +50,7 @@ Config (env, prefix `AGENT_`): `AGENT_GEMINI_API_KEY`, `AGENT_DATABASE_URL`
 | POST | `/sessions` | Create a session → `{session_id, title}` |
 | POST | `/sessions/{id}/messages` | Ask `{question, dataset_ids}` (N datasets → multi-file join) → runs the agent with conversation memory, returns the **enriched `AskResponse`** (see below) |
 | POST | `/sessions/{id}/messages/stream` | Same as above but streams progress live over **SSE** (`text/event-stream`): `step`, `token`, `clarify`, and a terminal `done` event carrying the full `AskResponse` |
+| POST | `/datasets/{id}/dashboard` | **Auto-Dashboard (Phase A)** — no body/question required (optional `{session_id}`). Fully automatically builds a visual dashboard for ONE dataset by reusing the agent's plan→generate_code→execute_code→observe loop in dashboard mode, then a `dashboard_finalize` step. Returns a **`DashboardPayload`** (see below). `404` if the dataset is unknown; `500` on run failure |
 | GET | `/usage/daily` | Running daily token + cost total over today's runs (server-local date) → `{date, prompt_tokens, completion_tokens, cost_usd}` |
 | GET | `/sessions/{id}` | Session detail → `{session, datasets, messages, runs}`; each dataset carries its real parsed `profile` |
 | GET | `/sessions` | List sessions for the history sidebar → `{sessions:[{id, title, created_at, updated_at, dataset_count, message_count}]}` ordered by `updated_at` desc |
@@ -78,6 +80,31 @@ When the clarify entry-gate fires on a vague question, `status` is `"needs_clari
 `needs_clarification` holds the clarifying question, and no code runs (`generated_code` null,
 `step_count` 0). Chart types are `bar` | `line` | `scatter`; a scalar answer degrades to
 `key_stats` only (empty `charts`).
+
+**`DashboardPayload`** (returned by `POST /datasets/{id}/dashboard`):
+
+```json
+{
+  "dataset_id": "uuid",
+  "title": "sales.csv — overview",
+  "charts": [{"type": "bar" | "line" | "pie" | "scatter",
+              "title": "Sales by region", "x_label": "region", "y_label": "amount",
+              "data": [{"x": "West", "y": 12000, "series": null}]}],
+  "summary_table": {"title": "Totals by region", "columns": ["region", "amount"],
+                    "rows": [["West", 12000]]},
+  "insights": ["North leads sales at 71,200 (highest of all regions).", "…"],
+  "data_grid": {"columns": ["order_id", "region", "amount"],
+                "rows": [["O1", "West", 99.0]], "total_rows": 600},
+  "status": "completed", "error": null
+}
+```
+
+`charts` (2–4, types picked per column: categorical→`bar`/`pie`, temporal→`line`,
+numeric-vs-numeric→`scatter`), `summary_table` (one grouped aggregation), and `insights`
+(2–5 grounded sentences) are derived from LOCAL execution over the **full** dataframe plus
+one Gemini insights call. `data_grid` is computed **deterministically** (no LLM): the first
+`AGENT_GRID_ROW_CAP` rows (default 200) as a capped SAMPLE, with `total_rows` the TRUE full
+count. Only schema + sample rows ever reach Gemini — never the full dataset.
 
 **SSE event shapes** (`POST /sessions/{id}/messages/stream`, one JSON object per `data:` line):
 

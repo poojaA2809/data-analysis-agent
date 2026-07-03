@@ -10,7 +10,11 @@ _MAX_TABLE_ROWS = 100
 _MAX_TABLE_COLS = 20
 _MAX_KEY_STATS = 8
 _MAX_FOLLOWUPS = 3
-_VALID_CHART_TYPES = {"bar", "line", "scatter"}
+# "pie" is added for the Phase-A auto-dashboard (part-of-whole charts).
+_VALID_CHART_TYPES = {"bar", "line", "pie", "scatter"}
+
+_MIN_INSIGHTS = 2
+_MAX_INSIGHTS = 5
 
 
 def parse_finalize(raw: str) -> dict:
@@ -162,3 +166,94 @@ def _cell(v):
     if isinstance(v, (str, int, float, bool)) or v is None:
         return v
     return str(v)
+
+
+# --- Phase A: auto-dashboard assembly ----------------------------------------
+
+def _clean_single_table(obj) -> dict | None:
+    """Clean one summary-table dict via the shared table cleaner."""
+    if not isinstance(obj, dict):
+        return None
+    cleaned = _clean_tables([obj])
+    return cleaned[0] if cleaned else None
+
+
+def clean_insights(insights) -> list:
+    """Keep 2–5 non-empty insight strings (capped). May return fewer/zero — the
+    caller tops up with derived insights so the payload always has >=2."""
+    out: list[str] = []
+    if isinstance(insights, list):
+        for s in insights:
+            if isinstance(s, str) and s.strip():
+                out.append(s.strip())
+            if len(out) >= _MAX_INSIGHTS:
+                break
+    return out
+
+
+def build_data_grid(dataset_path: str, cap: int) -> dict:
+    """Deterministic (no LLM) capped SAMPLE of the real records.
+
+    Reads the dataframe, returns all columns, the first `cap` rows as a JSON-safe
+    list-of-lists, and the TRUE full row count. Never raises — degrades to empty.
+    """
+    try:
+        import pandas as pd  # local import: render is used LLM-side too
+
+        if dataset_path.lower().endswith((".xlsx", ".xls")):
+            df = pd.read_excel(dataset_path)
+        else:
+            df = pd.read_csv(dataset_path)
+        total = int(len(df))
+        columns = [str(c) for c in df.columns]
+        cap = max(0, int(cap))
+        rows = json.loads(df.head(cap).to_json(orient="values", date_format="iso"))
+        if not isinstance(rows, list):
+            rows = []
+        return {"columns": columns, "rows": rows, "total_rows": total}
+    except Exception:  # noqa: BLE001 — grid is best-effort
+        return {"columns": [], "rows": [], "total_rows": 0}
+
+
+def parse_dashboard(
+    raw_result,
+    *,
+    dataset_id: str = "",
+    title: str = "",
+    insights=None,
+    data_grid: dict | None = None,
+    status: str = "completed",
+    error: str | None = None,
+) -> dict:
+    """Assemble a DashboardPayload from the local execution `raw_result`
+    (dict or JSON string with `charts` + `summary_table`), the (LLM or derived)
+    `insights`, and the deterministic `data_grid`. Never raises — degrades to
+    whatever is valid.
+    """
+    obj = raw_result if isinstance(raw_result, dict) else _extract_json(raw_result)
+    if not isinstance(obj, dict):
+        obj = {}
+
+    charts = _clean_charts(obj.get("charts"))
+    summary_table = _clean_single_table(obj.get("summary_table")) or {
+        "title": "",
+        "columns": [],
+        "rows": [],
+    }
+    ins = clean_insights(insights if insights is not None else obj.get("insights"))
+    grid = data_grid if isinstance(data_grid, dict) else {
+        "columns": [],
+        "rows": [],
+        "total_rows": 0,
+    }
+
+    return {
+        "dataset_id": dataset_id,
+        "title": title,
+        "charts": charts,
+        "summary_table": summary_table,
+        "insights": ins,
+        "data_grid": grid,
+        "status": status,
+        "error": error,
+    }

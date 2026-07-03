@@ -36,8 +36,14 @@ def test_parse_fallback_on_non_json():
 
 
 def test_invalid_chart_type_dropped():
-    raw = '{"answer": "x", "charts": [{"type": "pie", "data": [{"x": 1, "y": 2}]}]}'
+    # "pie" is a VALID type as of Phase A (auto-dashboard); use a truly invalid one.
+    raw = '{"answer": "x", "charts": [{"type": "bubble", "data": [{"x": 1, "y": 2}]}]}'
     assert parse_finalize(raw)["charts"] == []
+
+
+def test_pie_chart_type_accepted():
+    raw = '{"answer": "x", "charts": [{"type": "pie", "data": [{"x": "A", "y": 2}]}]}'
+    assert parse_finalize(raw)["charts"][0]["type"] == "pie"
 
 
 def test_chart_rows_capped():

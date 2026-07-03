@@ -91,3 +91,31 @@ Ad-hoc data questions today mean writing throwaway pandas notebooks by hand — 
 - **Key surfaces / files:** `rich-output`→`src/analysis/render.py`, `src/graph/nodes.py`; `cost-metering`→`src/observability/cost.py`, `src/api/usage.py`; `streaming`→`src/api/stream.py`, `src/observability/events.py`; `proactive`→`src/graph/nodes.py`, `src/prompts/*.md`; `frontend`→`frontend/src/app/components/*`; `e2e`→`frontend/tests/e2e/rich_stream.spec.ts`.
 - **Gate command:** `uv run alembic upgrade head` then `uv run pytest tests/phase3`; frontend `pnpm --dir frontend exec playwright test rich_stream`.
 - **How the user tests it (handoff seed):** Ask a question that yields a trend. Watch the step labels stream in order ("Planning…", "Generating code…", "Running code…", "Checking result…", "Charting…", "Writing answer…"), then the answer stream in token-by-token over the single SSE POST; an interactive recharts chart and a summary table render, key stats highlight, and the cost bar shows this query's real Gemini tokens/cost plus today's running daily total (updates after each query). Two–three follow-up chips appear; click one to submit it as a new question. Ask a deliberately vague question ("tell me about it") and confirm the clarify entry-gate returns a clarifying question via the `clarify` event and ends without running code.
+
+### Phase A — Auto-Dashboard (view in-app)
+
+- **Goal:** Upload ONE CSV → the agent FULLY AUTOMATICALLY (no user question/prompt) generates a visual dashboard — multiple interactive charts, a summary/aggregation table, 2–5 written insights, and a paged/capped data grid of the actual records — viewable interactively in the app. This is the core testable win.
+- **Capabilities delivered:** `auto_dashboard`.
+- **Independent slices (parallel build units):**
+  - `dashboard-backend` (backend) — dashboard entry + `dashboard_finalize` node reusing the plan→generate_code→execute_code→observe loop; `POST /datasets/{id}/dashboard` endpoint; extend `src/analysis/render.py` with `pie` chart type + `DashboardPayload` assembly (charts/summary_table/data_grid); Gemini insights step; all real Gemini; deps: none (extends existing agent/render in place).
+  - `dashboard-frontend` (frontend) — dashboard view rendering the multiple charts (recharts, +pie), the summary table, the insights list, and the paged/capped data grid; auto-triggered after upload; reuses the Phase-3 chart/table renderers; deps: none (talks to the API contract).
+  - `e2e` (frontend) — Playwright: upload one CSV → dashboard view renders ≥2 charts + summary table + insights + data grid; deps: `dashboard-frontend`, `dashboard-backend`.
+- **Key surfaces / files:**
+  - `dashboard-backend`: `src/graph/nodes.py` (dashboard objective + `dashboard_finalize`), `src/graph/state.py` (`dashboard` field), `src/analysis/render.py` (pie + payload assembly), `src/api/datasets.py` (`POST /datasets/{id}/dashboard`), `src/prompts/dashboard*.md`, `tests/phaseA/`.
+  - `dashboard-frontend`: `frontend/src/app/components/Dashboard*.tsx`, `frontend/src/app/page.tsx` (wire auto-trigger after upload).
+  - `e2e`: `frontend/tests/e2e/dashboard.spec.ts`.
+- **Gate command:** `uv run alembic upgrade head` then `uv run pytest tests/phaseA` (real Gemini key from `.env`, incl. an auto-dashboard integration test on a multi-column CSV of ≥ several hundred rows where a sampled vs. full aggregate observably differ — asserts ≥2 charts, non-empty summary table, 2–5 insights, and `data_grid.total_rows` == the real row count while `len(data_grid.rows) <= AGENT_GRID_ROW_CAP`); frontend `pnpm --dir frontend exec playwright test dashboard`.
+- **How the user tests it (handoff seed):** Run `uv run uvicorn api.main:app --port 8001` and serve the frontend at `http://localhost:8001/app/`. Upload one CSV (e.g. a sales export). WITHOUT typing any question, a dashboard renders automatically: 2–4 interactive charts (bar/line/pie/scatter picked by the agent across the key columns), a summary/aggregation table (grouped totals), 2–5 short written insights, and a data grid showing a capped sample of the real rows with the true total-row count. Real: the whole dashboard on the tested path. Labelled stub (greyed, "Coming soon"): the Export/Share button (built in Phase B).
+
+### Phase B — Export/Share the dashboard (spec only, built later)
+
+- **Goal:** Download/share the FINISHED dashboard — as an image/PDF or a shareable file — so the user can save or hand off the generated dashboard.
+- **Capabilities delivered:** extends `auto_dashboard` (export/share of the produced `DashboardPayload`).
+- **Independent slices (parallel build units):**
+  - `export-backend` (backend) — render the `DashboardPayload` to a shareable artifact (server-side PDF/image or a self-contained shareable file) + a download endpoint (e.g. `GET /datasets/{id}/dashboard/export?format=pdf|png`); deps: `dashboard-backend` (needs the payload).
+  - `export-frontend` (frontend) — replace the Phase-A "Export/Share" stub with a real download/share control (client-side image/PDF capture of the dashboard view or call to the export endpoint); deps: `dashboard-frontend`.
+  - `e2e` (frontend) — Playwright: open a dashboard → click Export → a file downloads (non-empty, correct type); deps: `export-frontend`, `export-backend`.
+- **Key surfaces / files:** `export-backend`→`src/api/datasets.py`, `src/analysis/export.py`; `export-frontend`→`frontend/src/app/components/Dashboard*.tsx`; `e2e`→`frontend/tests/e2e/dashboard_export.spec.ts`.
+- **Gate command:** `uv run pytest tests/phaseB` then `pnpm --dir frontend exec playwright test dashboard_export`.
+- **How the user tests it (handoff seed):** Open a generated dashboard, click Export/Share, choose image/PDF or shareable file — a non-empty file downloads and, opened, visually matches the in-app dashboard.
+> **Assumed:** export format is image/PDF (client capture) and/or a self-contained shareable file; the exact artifact (server-side PDF vs. client-side canvas capture) is finalized when Phase B is built. No saved-dashboard persistence, per the out-of-scope note.

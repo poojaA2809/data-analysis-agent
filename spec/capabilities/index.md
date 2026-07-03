@@ -16,6 +16,7 @@
 | Cost & token transparency | 3 | [cost_transparency.md](cost_transparency.md) |
 | Live streaming step updates | 3 | [live_streaming.md](live_streaming.md) |
 | Proactive assist (follow-ups + clarify) | 3 | [proactive_assist.md](proactive_assist.md) |
+| Auto-Dashboard (one CSV → auto charts + summary table + insights + data grid) | A | [auto_dashboard.md](auto_dashboard.md) |
 
 ## How to Add a New Capability
 

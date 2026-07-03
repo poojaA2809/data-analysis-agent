@@ -112,7 +112,7 @@ export type ChartPoint = {
 }
 
 export type ChartSpec = {
-  type?: 'bar' | 'line' | 'scatter' | string
+  type?: 'bar' | 'line' | 'pie' | 'scatter' | string
   title?: string | null
   x_label?: string | null
   y_label?: string | null
@@ -145,6 +145,24 @@ export type MessageData = {
   prompt_tokens: number | null
   completion_tokens: number | null
   cost_usd: number | null
+  error?: string | null
+}
+
+// ---- Auto-Dashboard (Phase A) ----
+export type DataGrid = {
+  columns?: string[] | null
+  rows?: unknown[][] | null
+  total_rows?: number | null
+}
+
+export type DashboardPayload = {
+  dataset_id: string
+  title?: string | null
+  charts: ChartSpec[]
+  summary_table: TableSpec | null
+  insights: string[]
+  data_grid: DataGrid | null
+  status: string
   error?: string | null
 }
 
@@ -250,6 +268,23 @@ export async function askQuestion(
     body: JSON.stringify({ question, dataset_ids: datasetIds }),
   })
   return unwrap<MessageData>(res)
+}
+
+/**
+ * Auto-generate a dashboard for one uploaded dataset (Phase A). No user
+ * question — the dataset id in the path is the sole input. Optionally
+ * associates the run with a session. Returns the full `DashboardPayload`.
+ */
+export async function generateDashboard(
+  datasetId: string,
+  sessionId?: string | null,
+): Promise<DashboardPayload> {
+  const res = await fetch(`/datasets/${datasetId}/dashboard`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(sessionId ? { session_id: sessionId } : {}),
+  })
+  return unwrap<DashboardPayload>(res)
 }
 
 /** Fetch today's running token + cost total (Phase 3). */

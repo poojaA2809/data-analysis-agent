@@ -4,11 +4,13 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, File, Form, UploadFile
 from sqlalchemy.orm import Session
 
+from analysis.schema import derive_schema
 from api._common import ok, api_error
 from db.models import DatasetRow, SessionRow
 from db.session import get_session
-from domain.schemas import DatasetResponse
+from domain.schemas import DashboardRequest, DatasetResponse
 from graph.nodes import profile as profile_upload
+from graph.runner import run_dashboard
 from observability.events import get_logger
 from storage.files import store_upload
 
@@ -99,3 +101,41 @@ async def create_dataset(
             profile=profile,
         ).model_dump()
     )
+
+
+@router.post("/datasets/{dataset_id}/dashboard")
+def create_dashboard(
+    dataset_id: str,
+    req: DashboardRequest | None = None,
+    session: Session = Depends(get_session),
+) -> dict:
+    """Phase A — fully automatic auto-dashboard for ONE dataset (no user
+    question). Runs the dashboard flow and returns a DashboardPayload."""
+    ds = session.get(DatasetRow, dataset_id)
+    if ds is None:
+        raise api_error("NOT_FOUND", f"Dataset {dataset_id} not found", 404)
+
+    # Commit/close the request session before the (synchronous) run, which opens
+    # its own DB session for the run row — mirrors the ask path.
+    session_id = ds.session_id
+    filename = ds.filename
+    file_path = ds.file_path
+    session.commit()
+
+    schema = derive_schema(file_path, filename)
+    payload = run_dashboard(
+        session_id=session_id,
+        dataset_id=dataset_id,
+        dataset_path=file_path,
+        dataset_schema=schema,
+        title=f"{filename} — overview",
+    )
+
+    if payload.get("status") == "failed":
+        _log.error("dashboard.failed", dataset_id=dataset_id, error=payload.get("error"))
+        raise api_error(
+            "DASHBOARD_FAILED",
+            payload.get("error") or "Dashboard generation failed",
+            500,
+        )
+    return ok(payload)

@@ -7,6 +7,7 @@ import { ProfileCard } from './components/ProfileCard'
 import { HistorySidebar } from './components/HistorySidebar'
 import { DatasetPicker } from './components/DatasetPicker'
 import { RichOutput } from './components/RichOutput'
+import { Dashboard } from './components/Dashboard'
 import { CostBar } from './components/CostBar'
 import { FollowupChips } from './components/FollowupChips'
 import { StepIndicator } from './components/StepIndicator'
@@ -14,9 +15,11 @@ import {
   askQuestion,
   askQuestionStream,
   createSession,
+  generateDashboard,
   getSession,
   listSessions,
   uploadDataset,
+  type DashboardPayload,
   type MessageData,
   type SessionSummary,
   type StreamEvent,
@@ -52,6 +55,14 @@ export default function Home() {
   const [stepLabel, setStepLabel] = useState<string | null>(null)
   const [queryCost, setQueryCost] = useState<QueryCost | null>(null)
   const [usageKey, setUsageKey] = useState(0)
+
+  // Auto-dashboard (Phase A): built automatically after a CSV upload, no
+  // question required. `dashboard` holds the rendered payload, `dashboardLoading`
+  // drives the "Building your dashboard…" state, `dashboardError` surfaces a
+  // failure without breaking the rest of the page.
+  const [dashboard, setDashboard] = useState<DashboardPayload | null>(null)
+  const [dashboardLoading, setDashboardLoading] = useState(false)
+  const [dashboardError, setDashboardError] = useState<string | null>(null)
 
   const [sessions, setSessions] = useState<SessionSummary[]>([])
   const [historyLoading, setHistoryLoading] = useState(true)
@@ -154,6 +165,9 @@ export default function Home() {
     setQuestion('')
     setStepLabel(null)
     setQueryCost(null)
+    setDashboard(null)
+    setDashboardLoading(false)
+    setDashboardError(null)
     try {
       localStorage.removeItem(LAST_SESSION_KEY)
     } catch {
@@ -186,6 +200,33 @@ export default function Home() {
     ])
     setSelected((prev) => new Set(prev).add(ds.dataset_id))
     void refreshHistory()
+
+    // Auto-trigger the dashboard for the just-uploaded dataset — no user
+    // question required. Failures are surfaced inline and never break the page
+    // or block the ask UI.
+    setDashboard(null)
+    setDashboardError(null)
+    setDashboardLoading(true)
+    try {
+      const payload = await generateDashboard(ds.dataset_id, sessionRef.current)
+      if (payload.status === 'failed') {
+        setDashboardError(
+          payload.error?.trim() ||
+            'The dashboard could not be generated for this file. You can still ask questions below.',
+        )
+        setDashboard(null)
+      } else {
+        setDashboard(payload)
+      }
+    } catch (err) {
+      const msg =
+        err instanceof Error
+          ? err.message
+          : 'The dashboard could not be generated for this file.'
+      setDashboardError(msg)
+    } finally {
+      setDashboardLoading(false)
+    }
   }
 
   // Apply a finalized MessageData payload to the active turn (both the streamed
@@ -381,6 +422,42 @@ export default function Home() {
                     profile={f.profile!}
                   />
                 ))}
+              </section>
+            )}
+
+            {(dashboardLoading || dashboardError || dashboard) && (
+              <section className="mb-6" aria-label="Dashboard" data-testid="dashboard-section">
+                {dashboardLoading && (
+                  <div
+                    data-testid="dashboard-loading"
+                    className="flex items-center gap-3 rounded-xl border border-gray-200 bg-white p-5 text-sm text-gray-600 shadow-sm"
+                  >
+                    <svg
+                      className="h-5 w-5 animate-spin text-blue-600"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      aria-hidden="true"
+                    >
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 0 1 8-8V0C5.4 0 0 5.4 0 12h4z" />
+                    </svg>
+                    Building your dashboard… this runs a few analyses and may take a moment.
+                  </div>
+                )}
+
+                {!dashboardLoading && dashboardError && (
+                  <div
+                    role="alert"
+                    data-testid="dashboard-error"
+                    className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700"
+                  >
+                    Couldn&apos;t build the dashboard: {dashboardError}
+                  </div>
+                )}
+
+                {!dashboardLoading && !dashboardError && dashboard && (
+                  <Dashboard payload={dashboard} />
+                )}
               </section>
             )}
 

@@ -28,6 +28,10 @@ class AskRequest(BaseModel):
     dataset_ids: list[str]
 
 
+class DashboardRequest(BaseModel):
+    session_id: str | None = None
+
+
 class AskResponse(BaseModel):
     run_id: str
     status: str

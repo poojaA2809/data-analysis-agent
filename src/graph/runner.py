@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 
 from db.models import RunRow, MessageRow, SessionRow
 from db.session import create_db_session
-from graph.agent import agentic_ai
+from graph.agent import agentic_ai, dashboard_ai
 from graph.state import AgentState
 from observability.cost import compute_cost
 from observability.events import get_logger
@@ -153,3 +153,72 @@ def run_agent(
         error=payload["error"],
     )
     return payload
+
+
+_DASHBOARD_QUESTION = "[auto-dashboard]"
+
+
+def run_dashboard(
+    session_id: str,
+    dataset_id: str,
+    dataset_path: str,
+    dataset_schema: dict,
+    *,
+    title: str = "",
+) -> dict:
+    """Run the auto-dashboard flow synchronously for ONE dataset. Reuses the
+    plan→generate_code→execute_code→observe loop in dashboard mode, persists a
+    `runs` row exactly like the ask path, and returns a DashboardPayload dict.
+
+    Never raises — on any failure returns a payload with status="failed" + error.
+    """
+    started = time.monotonic()
+    run_id = create_run_row(session_id, _DASHBOARD_QUESTION, [dataset_id])
+    _log.info("dashboard.start", run_id=run_id, session_id=session_id, dataset_id=dataset_id)
+
+    initial: AgentState = {
+        "run_id": run_id,
+        "session_id": session_id,
+        "question": _DASHBOARD_QUESTION,
+        "dataset_paths": [dataset_path],
+        "dataset_schemas": [dataset_schema],
+        "dataset_id": dataset_id,
+        "dashboard_title": title,
+        "dashboard_mode": True,
+        "messages": [],
+        "step_count": 0,
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "error": None,
+    }
+
+    try:
+        final = dashboard_ai.invoke(initial)
+    except Exception as exc:  # noqa: BLE001 — never crash the request
+        final = {"status": "failed", "error": str(exc)}
+
+    # Persist the run row (tokens/cost/status/step_count) like the ask path.
+    persist_run(session_id, run_id, final)
+
+    dashboard = final.get("dashboard")
+    if not isinstance(dashboard, dict):
+        dashboard = {
+            "dataset_id": dataset_id,
+            "title": title,
+            "charts": [],
+            "summary_table": {"title": "", "columns": [], "rows": []},
+            "insights": [],
+            "data_grid": {"columns": [], "rows": [], "total_rows": 0},
+            "status": "failed",
+            "error": final.get("error") or "dashboard generation failed",
+        }
+    _log.info(
+        "dashboard.done",
+        run_id=run_id,
+        status=dashboard.get("status"),
+        charts=len(dashboard.get("charts", [])),
+        insights=len(dashboard.get("insights", [])),
+        latency_ms=int((time.monotonic() - started) * 1000),
+        error=dashboard.get("error"),
+    )
+    return dashboard

@@ -7,10 +7,16 @@ class AgentState(TypedDict, total=False):
     session_id: str
 
     # Input
-    question: str
+    question: str                   # optional on the dashboard path (synthetic objective)
     dataset_paths: list[str]
     dataset_schemas: list[dict]
     messages: list                  # prior chat turns (P2) — [{role, content}]
+
+    # Auto-dashboard path (Phase A)
+    dashboard_mode: bool            # selects dashboard prompts + dashboard_finalize
+    dataset_id: str                 # the single dataset the dashboard is built for
+    dashboard_title: str            # e.g. "sales.csv — overview"
+    dashboard: dict                 # the assembled DashboardPayload
 
     # Pipeline data (populated progressively)
     plan: str

@@ -64,6 +64,28 @@ Phase 1 returns `answer_text` + `generated_code` real; the remaining fields are 
 - `event: clarify` — `{ "question": "…" }`, emitted if the clarify entry-gate triggers; the stream then ends without running code.
 - `event: done` — the full `AskResponse` payload: `{ run_id, status, answer_text, generated_code, step_count, needs_clarification, charts, tables, key_stats, followups, prompt_tokens, completion_tokens, cost_usd, error }`.
 
+### `POST /datasets/{id}/dashboard` (Phase A — Auto-Dashboard)
+**Purpose:** Fully automatically generate a visual dashboard for ONE uploaded dataset — no user question/prompt. Runs the agent's dashboard flow (plan→generate_code→execute_code→observe loop reused, then dashboard-finalize) over the dataset's schema + profile + sample rows and returns a `DashboardPayload`. Synchronous (same run model as `POST /sessions/{id}/messages`).
+
+**Request:** no body required (the dataset id in the path is the sole input). Optional `{ "session_id": "uuid" }` to associate the run with a session.
+
+**Response** (`DashboardPayload`, shapes reconciled with the Phase-3 chart/table specs so the frontend reuses its renderers):
+```json
+{ "dataset_id": "uuid",
+  "title": "sales.csv — overview",
+  "charts": [
+    { "type": "bar", "title": "Revenue by region", "x_label": "region", "y_label": "revenue",
+      "data": [ { "x": "West", "y": 12000, "series": null } ] }
+  ],
+  "summary_table": { "title": "Totals by region", "columns": ["region", "orders", "revenue"], "rows": [["West", 120, 12000]] },
+  "insights": ["West drives 41% of revenue.", "Orders peaked in Q2."],
+  "data_grid": { "columns": ["order_id", "region", "amount"], "rows": [["A1", "West", 99.0]], "total_rows": 5000 },
+  "status": "completed" }
+```
+`charts[*].type` is one of `"bar"|"line"|"pie"|"scatter"` (`pie` newly supported). `charts`/`summary_table`/`data_grid` come from local execution via the extended render layer; `insights` and the code/plan come from Gemini. See [`spec/capabilities/auto_dashboard.md`](capabilities/auto_dashboard.md).
+
+**Errors:** 404 unknown dataset; 500 run failure (also reflected as `status: "failed"` with `error`).
+
 ### `GET /health`
 Skeleton health check (unchanged).
 
