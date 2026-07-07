@@ -1,0 +1,7 @@
+region,order_value,units
+West,100,2
+East,200,1
+West,300,4
+East,150,3
+North,250,5
+West,50,1

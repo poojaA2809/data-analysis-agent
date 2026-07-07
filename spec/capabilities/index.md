@@ -1,38 +1,23 @@
 # Capabilities Index
 
-> **Boilerplate status:** The spec-writer sub-agent creates one file per capability in this directory. Each file describes exactly one discrete thing the agent can do.
+> One file per capability — a single discrete thing the agent can do. Extends the skeleton `transform_text` slot, renamed to `analyze_dataset`.
 
 ---
 
-## What Is a Capability?
-
-A capability is a single, discrete action or behavior the agent performs. Examples:
-- "Search the web for companies matching criteria X"
-- "Draft a personalized email given a lead profile"
-- "Send a Slack notification when a threshold is crossed"
-
 ## Capabilities in This Project
 
-<!-- FILL IN: List capabilities here as they are defined. Each entry links to its spec file (no number prefix). -->
-
-| Capability | File |
-|-----------|------|
-| <!-- name --> | [name.md](name.md) |
+| Capability | Phase | File |
+|-----------|-------|------|
+| Analyze dataset (plan→code→run→iterate→answer + code panel) | 1 | [analyze_dataset.md](analyze_dataset.md) |
+| Persist sessions & conversation history | 2 | [persist_sessions.md](persist_sessions.md) |
+| Auto-profile a new upload | 2 | [profile_dataset.md](profile_dataset.md) |
+| Multi-file & Excel analysis | 2 | [multi_file_analysis.md](multi_file_analysis.md) |
+| Rich output (charts, tables, key stats) | 3 | [rich_output.md](rich_output.md) |
+| Cost & token transparency | 3 | [cost_transparency.md](cost_transparency.md) |
+| Live streaming step updates | 3 | [live_streaming.md](live_streaming.md) |
+| Proactive assist (follow-ups + clarify) | 3 | [proactive_assist.md](proactive_assist.md) |
+| Auto-Dashboard (one CSV → auto charts + summary table + insights + data grid) | A | [auto_dashboard.md](auto_dashboard.md) |
 
 ## How to Add a New Capability
 
-Run `/zero-shot-build [description]` on the existing spec. The spec-writer sub-agent will:
-1. Create a new file in this directory (`<name>.md`, no number prefix)
-2. Update this index
-3. Flag any dependencies on existing capabilities
-4. Self-review that it fits the architecture and data model before returning
-
-## Capability File Template
-
-Each capability file should answer:
-- **What it does** (one sentence)
-- **Inputs** (what data it receives)
-- **Outputs** (what it produces)
-- **External calls** (APIs, LLMs, databases it touches)
-- **Error cases** (what can go wrong and how it's handled)
-- **Success criteria** (how we test it)
+Run `/zero-shot-build [description]` on the existing spec. The spec-writer creates a new `<name>.md`, updates this index, flags dependencies, and self-reviews.

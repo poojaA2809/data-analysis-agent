@@ -1,3 +1,163 @@
+# Data-Analysis Agent — Phase 3 (Rich answers, transparency, and proactivity)
+
+> **Run every command from the repo root.** All Python commands are prefixed with `uv run`.
+
+Upload CSV **and Excel** files, ask plain-language questions, and a LangGraph agent plans,
+writes pandas, runs it locally in a bounded subprocess against your real data, self-corrects
+on error up to a step limit, and returns a plain-language answer plus the exact executed
+Python. Raw data never leaves the machine — only a few sample rows are sent to the LLM.
+
+**Phase 2 adds:** every upload is **auto-profiled** (columns, types, ranges, data-quality
+flags) on the upload path; sessions, datasets, messages, and full run history **persist**
+across server restarts and are listable for a history sidebar; **conversation memory** injects
+prior turns so follow-up questions are understood; and you can load **multiple files (incl.
+Excel)** into one session and ask a single question that joins/compares them.
+
+**Phase 3 adds:** answers gain **charts, summary tables, and highlighted key stats** derived
+from the execution result (`rich_output`); every query reports **tokens + estimated cost**
+plus a **running daily total** (`cost_transparency`, `GET /usage/daily`); a **live SSE stream**
+emits step labels and streams the answer text as it is written (`POST
+/sessions/{id}/messages/stream`); and the agent suggests **2–3 follow-up questions** and asks a
+**clarifying question** when a request is too vague to attempt (`proactive_assist`). The
+synchronous `POST /sessions/{id}/messages` returns the SAME enriched payload as the stream.
+
+## Setup & run
+
+```bash
+cp .env.example .env          # set AGENT_GEMINI_API_KEY=<your real Gemini key>
+uv sync --extra dev
+
+# Build the SQLite schema (sessions, datasets, messages, runs) from scratch:
+uv run alembic upgrade head
+uv run alembic current        # -> 0001 (head)
+
+# Start the API + static frontend at http://localhost:8001
+uv run python -m src
+```
+
+Config (env, prefix `AGENT_`): `AGENT_GEMINI_API_KEY`, `AGENT_DATABASE_URL`
+(default `sqlite:///./data/agent.db`), `AGENT_MAX_STEPS` (default 4),
+`AGENT_EXEC_TIMEOUT` (default 25), `AGENT_GRID_ROW_CAP` (default 200 — the
+auto-dashboard data-grid sample cap), `AGENT_LOG_LEVEL`, and cost-metering prices
+`AGENT_COST_INPUT_PER_MTOK` (default `0.30`) / `AGENT_COST_OUTPUT_PER_MTOK`
+(default `2.50`) — USD per 1M tokens for `gemini-2.5-flash`.
+
+### Endpoints
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| POST | `/datasets` | Multipart CSV/Excel upload (`file`, optional `session_id`) → stores under `data/uploads/`, **auto-profiles**, returns `{dataset_id, session_id, filename, file_type, size_bytes, profile}` where `profile` is the deterministic profile dict (see below) |
+| POST | `/sessions` | Create a session → `{session_id, title}` |
+| POST | `/sessions/{id}/messages` | Ask `{question, dataset_ids}` (N datasets → multi-file join) → runs the agent with conversation memory, returns the **enriched `AskResponse`** (see below) |
+| POST | `/sessions/{id}/messages/stream` | Same as above but streams progress live over **SSE** (`text/event-stream`): `step`, `token`, `clarify`, and a terminal `done` event carrying the full `AskResponse` |
+| POST | `/datasets/{id}/dashboard` | **Auto-Dashboard (Phase A)** — no body/question required (optional `{session_id}`). Fully automatically builds a visual dashboard for ONE dataset by reusing the agent's plan→generate_code→execute_code→observe loop in dashboard mode, then a `dashboard_finalize` step. Returns a **`DashboardPayload`** (see below). `404` if the dataset is unknown; `500` on run failure |
+| GET | `/usage/daily` | Running daily token + cost total over today's runs (server-local date) → `{date, prompt_tokens, completion_tokens, cost_usd}` |
+| GET | `/sessions/{id}` | Session detail → `{session, datasets, messages, runs}`; each dataset carries its real parsed `profile` |
+| GET | `/sessions` | List sessions for the history sidebar → `{sessions:[{id, title, created_at, updated_at, dataset_count, message_count}]}` ordered by `updated_at` desc |
+| GET | `/health` | Health check |
+
+**Enriched `AskResponse`** (returned by `POST /messages` and inside the SSE `done` event):
+
+```json
+{
+  "run_id": "uuid", "status": "completed",
+  "answer_text": "West leads with a total order value of 400…",
+  "generated_code": "import pandas as pd\n…",
+  "step_count": 1,
+  "needs_clarification": null,
+  "charts": [{"type": "bar", "title": "Total order value by region",
+              "x_label": "region", "y_label": "total",
+              "data": [{"x": "West", "y": 400}, {"x": "East", "y": 350}]}],
+  "tables": [{"title": "Totals", "columns": ["region", "total"], "rows": [["West", 400]]}],
+  "key_stats": [{"label": "Top region", "value": "West", "delta": "+50"}],
+  "followups": ["How do units compare across regions?", "What is the trend over time?"],
+  "prompt_tokens": 1234, "completion_tokens": 210, "cost_usd": 0.000895,
+  "error": null
+}
+```
+
+When the clarify entry-gate fires on a vague question, `status` is `"needs_clarification"`,
+`needs_clarification` holds the clarifying question, and no code runs (`generated_code` null,
+`step_count` 0). Chart types are `bar` | `line` | `scatter`; a scalar answer degrades to
+`key_stats` only (empty `charts`).
+
+**`DashboardPayload`** (returned by `POST /datasets/{id}/dashboard`):
+
+```json
+{
+  "dataset_id": "uuid",
+  "title": "sales.csv — overview",
+  "charts": [{"type": "bar" | "line" | "pie" | "scatter",
+              "title": "Sales by region", "x_label": "region", "y_label": "amount",
+              "data": [{"x": "West", "y": 12000, "series": null}]}],
+  "summary_table": {"title": "Totals by region", "columns": ["region", "amount"],
+                    "rows": [["West", 12000]]},
+  "insights": ["North leads sales at 71,200 (highest of all regions).", "…"],
+  "data_grid": {"columns": ["order_id", "region", "amount"],
+                "rows": [["O1", "West", 99.0]], "total_rows": 600},
+  "status": "completed", "error": null
+}
+```
+
+`charts` (2–4, types picked per column: categorical→`bar`/`pie`, temporal→`line`,
+numeric-vs-numeric→`scatter`), `summary_table` (one grouped aggregation), and `insights`
+(2–5 grounded sentences) are derived from LOCAL execution over the **full** dataframe plus
+one Gemini insights call. `data_grid` is computed **deterministically** (no LLM): the first
+`AGENT_GRID_ROW_CAP` rows (default 200) as a capped SAMPLE, with `total_rows` the TRUE full
+count. Only schema + sample rows ever reach Gemini — never the full dataset.
+
+**SSE event shapes** (`POST /sessions/{id}/messages/stream`, one JSON object per `data:` line):
+
+```
+event: step     data: {"label": "Planning…"}          # also: Generating code…, Running code…, Checking result…, Charting…, Writing answer…
+event: token    data: {"text": "West leads with "}     # answer prose, streamed in chunks
+event: clarify  data: {"question": "Which metric…?"}    # only on the vague-question gate
+event: done     data: { …full AskResponse json… }       # terminal event
+```
+
+**Profile shape** (`profile` field on `POST /datasets` and each `datasets[]` in `GET /sessions/{id}`):
+
+```json
+{
+  "filename": "sales.csv",
+  "row_count": 6,
+  "column_count": 3,
+  "summary": "Optional one-paragraph LLM narration (omitted if the LLM errors).",
+  "columns": [
+    {"name": "order_value", "dtype": "int64", "non_null_count": 6, "null_count": 0,
+     "null_pct": 0.0, "unique_count": 6, "is_numeric": true,
+     "summary": {"mean": 175.0, "std": 93.5, "min": 50.0, "max": 300.0},
+     "outlier_count": 0},
+    {"name": "region", "dtype": "object", "non_null_count": 6, "null_count": 0,
+     "null_pct": 0.0, "unique_count": 3, "is_numeric": false,
+     "top_values": [{"value": "West", "count": 3}]}
+  ],
+  "quality": {
+    "missing_value_columns": [{"name": "order_value", "null_count": 1, "null_pct": 20.0}],
+    "duplicate_row_count": 1,
+    "outlier_columns": [{"name": "amount", "outlier_count": 2}]
+  }
+}
+```
+
+Multi-file: generated code accesses each dataset via `dfs["<filename-stem>"]` (and `df` = the
+first dataset). Excel is loaded via `openpyxl`. Profiling is deterministic (pandas) — the
+deterministic dict is the source of truth; the optional `summary` narration is best-effort and
+the upload never fails if the LLM errors.
+
+### Tests
+
+```bash
+uv run pytest tests/unit/ -q         # no key needed (contract, DB, executor, settings)
+uv run pytest tests/phase2/ -q       # Phase 2: profiler (no key) + integration (needs key)
+uv run pytest -q                     # full suite — integration needs a real AGENT_GEMINI_API_KEY
+```
+
+Integration tests hit the real Google Gemini API (model `gemini-2.5-flash`) and a real
+subprocess pandas executor; they skip only if no key is present.
+
+---
+
 # Zero Shot SDD Harness for Building Agents
 
 Give it a one-line idea. Walk away with a working, tested, phased agent.

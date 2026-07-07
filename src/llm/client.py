@@ -33,3 +33,13 @@ class LLMClient:
 
     def call_model(self, prompt: str, *, system: str | None = None) -> str:
         return self._provider.call_model(prompt, system=system)
+
+    def call_model_metered(
+        self, prompt: str, *, system: str | None = None
+    ) -> tuple[str, int, int]:
+        """Return (text, prompt_tokens, completion_tokens) for cost metering."""
+        return self._provider.call_model_metered(prompt, system=system)
+
+    def stream_model(self, prompt: str, *, system: str | None = None):
+        """Yield answer text chunks live from the provider."""
+        return self._provider.stream_model(prompt, system=system)
